@@ -23,8 +23,9 @@ DEFAULT_LOG_PATH = Path("contextflame.jsonl")
 
 def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
     """Create the proxy Starlette app."""
-    # Track content hashes for duplicate detection across session
-    content_hashes: dict[str, str] = {}  # hash -> first call_id
+    # Track state across calls within a session
+    content_hashes: dict[str, str] = {}  # content hash -> first call_id
+    seen_tool_use_ids: set[str] = set()  # tool_use_ids already counted
     previous_input_tokens: int | None = None
 
     async def proxy_messages(request: Request) -> Response:
@@ -71,6 +72,7 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
                     request_body=request_body,
                     response_body=response_body,
                     content_hashes=content_hashes,
+                    seen_tool_use_ids=seen_tool_use_ids,
                     previous_input_tokens=previous_input_tokens,
                 )
                 append_snapshot(log_path, snapshot)
@@ -138,6 +140,7 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
                     request_body=request_body,
                     response_body=response_body,
                     content_hashes=content_hashes,
+                    seen_tool_use_ids=seen_tool_use_ids,
                     previous_input_tokens=previous_input_tokens,
                 )
                 append_snapshot(log_path, snapshot)

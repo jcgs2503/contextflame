@@ -101,39 +101,75 @@ def test_tool_injection_attribution():
     assert snap.total_tool_tokens == 1000
 
 
-def test_duplicate_detection():
-    """Test that duplicate tool results are flagged."""
-    content = "same content repeated"
+def test_no_double_counting_across_calls():
+    """Tool results from prior calls in the message history are not re-counted."""
     content_hashes: dict[str, str] = {}
+    seen_ids: set[str] = set()
 
-    messages = [
-        {
-            "role": "assistant",
-            "content": [{"type": "tool_use", "id": "tu_1", "name": "Read", "input": {"file_path": "/a.py"}}],
-        },
-        {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": content}],
-        },
+    # Call 1: one tool result
+    messages_call1 = [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "tu_1", "name": "Read", "input": {"file_path": "/a.py"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "x" * 400}]},
     ]
-
-    req = _make_request_body(messages=messages)
-    resp = _make_response_body()
-
-    # First call — not duplicate
     snap1 = attribute_call(
         call_id="c1", timestamp=datetime.now(timezone.utc),
-        request_body=req, response_body=resp,
-        content_hashes=content_hashes,
+        request_body=_make_request_body(messages=messages_call1),
+        response_body=_make_response_body(input_tokens=500),
+        content_hashes=content_hashes, seen_tool_use_ids=seen_ids,
+    )
+    assert len(snap1.tool_injections) == 1
+    assert snap1.total_tool_tokens == 100
+
+    # Call 2: same history + one new tool result
+    messages_call2 = messages_call1 + [
+        {"role": "assistant", "content": [{"type": "text", "text": "I read the file."}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "tu_2", "name": "Grep", "input": {"pattern": "TODO"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_2", "content": "y" * 800}]},
+    ]
+    snap2 = attribute_call(
+        call_id="c2", timestamp=datetime.now(timezone.utc),
+        request_body=_make_request_body(messages=messages_call2),
+        response_body=_make_response_body(input_tokens=1000),
+        content_hashes=content_hashes, seen_tool_use_ids=seen_ids,
+    )
+    # Should only count the NEW tool result (tu_2), not re-count tu_1
+    assert len(snap2.tool_injections) == 1
+    assert snap2.tool_injections[0].tool_name == "Grep"
+    assert snap2.total_tool_tokens == 200
+
+
+def test_duplicate_detection():
+    """Duplicate = different tool call, same content output."""
+    content = "same content repeated"
+    content_hashes: dict[str, str] = {}
+    seen_ids: set[str] = set()
+
+    # Call 1: Read /a.py → "same content repeated"
+    messages1 = [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "tu_1", "name": "Read", "input": {"file_path": "/a.py"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": content}]},
+    ]
+    snap1 = attribute_call(
+        call_id="c1", timestamp=datetime.now(timezone.utc),
+        request_body=_make_request_body(messages=messages1),
+        response_body=_make_response_body(),
+        content_hashes=content_hashes, seen_tool_use_ids=seen_ids,
     )
     assert snap1.tool_injections[0].is_duplicate is False
 
-    # Second call with same content — duplicate
+    # Call 2: Read /a.py again (different tool_use_id, same content)
+    messages2 = messages1 + [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "tu_2", "name": "Read", "input": {"file_path": "/a.py"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_2", "content": content}]},
+    ]
     snap2 = attribute_call(
         call_id="c2", timestamp=datetime.now(timezone.utc),
-        request_body=req, response_body=resp,
-        content_hashes=content_hashes,
+        request_body=_make_request_body(messages=messages2),
+        response_body=_make_response_body(),
+        content_hashes=content_hashes, seen_tool_use_ids=seen_ids,
     )
+    # Only tu_2 is new, and it IS a duplicate (same content as tu_1)
+    assert len(snap2.tool_injections) == 1
     assert snap2.tool_injections[0].is_duplicate is True
 
 
@@ -141,7 +177,6 @@ def test_context_reset_detection():
     """Test context reset is detected on significant token drop."""
     req = _make_request_body()
 
-    # No reset on first call
     snap1 = attribute_call(
         call_id="c1", timestamp=datetime.now(timezone.utc),
         request_body=req, response_body=_make_response_body(input_tokens=100000),
@@ -149,7 +184,6 @@ def test_context_reset_detection():
     )
     assert snap1.context_reset is False
 
-    # No reset when tokens grow
     snap2 = attribute_call(
         call_id="c2", timestamp=datetime.now(timezone.utc),
         request_body=req, response_body=_make_response_body(input_tokens=120000),
@@ -157,7 +191,6 @@ def test_context_reset_detection():
     )
     assert snap2.context_reset is False
 
-    # Reset when tokens drop >50%
     snap3 = attribute_call(
         call_id="c3", timestamp=datetime.now(timezone.utc),
         request_body=req, response_body=_make_response_body(input_tokens=30000),
