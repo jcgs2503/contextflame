@@ -47,14 +47,16 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
         call_id = str(uuid.uuid4())[:8]
         timestamp = datetime.now(timezone.utc)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-            if is_streaming:
-                return await _handle_streaming(
-                    client, target_url, forward_headers, body_bytes,
-                    request_body, call_id, timestamp,
-                    log_path, content_hashes,
-                )
-            else:
+        if is_streaming:
+            # Client must live as long as the streaming response, so don't
+            # use async-with here — the stream generator manages the lifecycle.
+            return await _handle_streaming(
+                target_url, forward_headers, body_bytes,
+                request_body, call_id, timestamp,
+                log_path, content_hashes,
+            )
+        else:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
                 resp = await client.post(
                     target_url,
                     content=body_bytes,
@@ -63,7 +65,6 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
 
                 response_body = resp.json()
 
-                # Attribute and log
                 snapshot = attribute_call(
                     call_id=call_id,
                     timestamp=timestamp,
@@ -83,7 +84,6 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
                 )
 
     async def _handle_streaming(
-        client: httpx.AsyncClient,
         target_url: str,
         forward_headers: dict,
         body_bytes: bytes,
@@ -96,52 +96,42 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
         """Handle streaming SSE responses by buffering for logging while streaming to client."""
         nonlocal previous_input_tokens
 
-        collected_chunks: list[str] = []
-        response_body: dict | None = None
-
         async def stream_generator():
-            nonlocal previous_input_tokens, response_body
+            nonlocal previous_input_tokens
 
-            async with client.stream(
-                "POST",
-                target_url,
-                content=body_bytes,
-                headers=forward_headers,
-            ) as resp:
-                # Accumulate the final message from SSE events
-                usage_data = {}
-                model = request_body.get("model", "unknown")
+            # Client lives inside the generator so it stays open for the
+            # entire duration of the streamed response.
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+                async with client.stream(
+                    "POST",
+                    target_url,
+                    content=body_bytes,
+                    headers=forward_headers,
+                ) as resp:
+                    usage_data = {}
+                    model = request_body.get("model", "unknown")
 
-                async for line in resp.aiter_lines():
-                    collected_chunks.append(line)
-                    yield line + "\n"
+                    async for line in resp.aiter_lines():
+                        yield line + "\n"
 
-                    # Parse SSE data lines for usage info
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            continue
-                        try:
-                            event_data = json.loads(data_str)
-                            # Capture usage from message_start or message_delta
-                            if event_data.get("type") == "message_start":
-                                msg = event_data.get("message", {})
-                                usage_data = msg.get("usage", {})
-                                model = msg.get("model", model)
-                            elif event_data.get("type") == "message_delta":
-                                delta_usage = event_data.get("usage", {})
-                                usage_data.update(delta_usage)
-                        except (json.JSONDecodeError, KeyError):
-                            pass
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                continue
+                            try:
+                                event_data = json.loads(data_str)
+                                if event_data.get("type") == "message_start":
+                                    msg = event_data.get("message", {})
+                                    usage_data = msg.get("usage", {})
+                                    model = msg.get("model", model)
+                                elif event_data.get("type") == "message_delta":
+                                    delta_usage = event_data.get("usage", {})
+                                    usage_data.update(delta_usage)
+                            except (json.JSONDecodeError, KeyError):
+                                pass
 
-                # Build a synthetic response body from accumulated SSE data
-                response_body = {
-                    "model": model,
-                    "usage": usage_data,
-                }
-
-            # Log after stream completes
-            if response_body:
+                # Log after stream completes
+                response_body = {"model": model, "usage": usage_data}
                 snapshot = attribute_call(
                     call_id=call_id,
                     timestamp=timestamp,
