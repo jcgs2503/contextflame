@@ -172,6 +172,76 @@ def _run_profiled(command: list[str], port: int, log_path: str | None, output_pa
 
 
 @main.command()
+@click.argument("command", nargs=-1, required=True)
+@click.option("--port", default=0, help="Proxy port (0 = auto-pick).")
+def log(command, port):
+    """Log raw API request/response payloads. No attribution, just the raw data.
+
+    \b
+    Usage:
+      cf log claude              Dump everything Claude Code sends/receives
+      cf log claude --model opus  Pass args through
+    """
+    import uvicorn
+    from contextflame.rawproxy import create_raw_app
+
+    if port == 0:
+        port = _find_free_port()
+
+    cf_dir = Path.cwd() / "cfgs"
+    cf_dir.mkdir(exist_ok=True)
+
+    session_id = str(int(time.time()))
+    log_file = cf_dir / f"{session_id}.raw.jsonl"
+
+    app = create_raw_app(log_path=log_file)
+
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning",
+    ))
+    proxy_thread = threading.Thread(target=server.run, daemon=True)
+    proxy_thread.start()
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                break
+        except OSError:
+            time.sleep(0.05)
+
+    click.echo(f"ContextFlame raw log → {' '.join(command)}")
+    click.echo(f"Proxy on :{port} | Log: {log_file}")
+    click.echo("─" * 52)
+
+    env = os.environ.copy()
+    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
+
+    try:
+        result = subprocess.run(list(command), env=env)
+        exit_code = result.returncode
+    except KeyboardInterrupt:
+        exit_code = 130
+
+    click.echo("─" * 52)
+
+    server.should_exit = True
+    proxy_thread.join(timeout=3.0)
+
+    if log_file.exists() and log_file.stat().st_size > 0:
+        # Count entries
+        with open(log_file) as f:
+            lines = [l for l in f if l.strip()]
+        requests = sum(1 for l in lines if '"type": "request"' in l)
+        click.echo(f"Logged {requests} API calls → {log_file}")
+        click.echo(f"Inspect with: cat {log_file} | python -m json.tool --no-ensure-ascii")
+    else:
+        click.echo("No API calls recorded.")
+
+    sys.exit(exit_code)
+
+
+@main.command()
 @click.option("--port", default=8011, help="Port to run the proxy on.")
 @click.option("--log", "log_path", default="contextflame.jsonl", help="Path to JSONL log file.")
 @click.option("--host", default="0.0.0.0", help="Host to bind to.")
