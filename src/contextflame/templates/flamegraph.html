@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ContextFlame Report</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; background: #0d1117; color: #c9d1d9; }
+  .header { padding: 20px 32px; border-bottom: 1px solid #21262d; }
+  .header h1 { font-size: 20px; color: #f0f6fc; margin-bottom: 4px; }
+  .header .subtitle { font-size: 13px; color: #8b949e; }
+  .metrics-bar {
+    display: flex; gap: 24px; padding: 16px 32px;
+    border-bottom: 1px solid #21262d; flex-wrap: wrap;
+  }
+  .metric {
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .metric .label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .metric .value { font-size: 18px; font-weight: 600; color: #f0f6fc; }
+  .metric .value.warn { color: #d29922; }
+  .metric .value.danger { color: #f85149; }
+  .chart-container { padding: 24px 32px; }
+  .chart-title { font-size: 14px; color: #8b949e; margin-bottom: 12px; }
+  .legend {
+    display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 6px; font-size: 12px;
+    cursor: pointer; opacity: 0.9; user-select: none;
+  }
+  .legend-item:hover { opacity: 1; }
+  .legend-item .swatch { width: 12px; height: 12px; border-radius: 2px; }
+  .legend-item.dimmed { opacity: 0.3; }
+  svg { display: block; }
+  .tooltip {
+    position: absolute; pointer-events: none; background: #161b22;
+    border: 1px solid #30363d; border-radius: 6px; padding: 10px 14px;
+    font-size: 12px; line-height: 1.6; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    z-index: 10; max-width: 350px;
+  }
+  .tooltip .tt-label { color: #8b949e; }
+  .tooltip .tt-value { color: #f0f6fc; font-weight: 500; }
+  .tooltip .tt-dup { color: #f85149; }
+  .tables { padding: 0 32px 32px; display: flex; gap: 32px; flex-wrap: wrap; }
+  .table-section { flex: 1; min-width: 300px; }
+  .table-section h3 { font-size: 14px; color: #8b949e; margin-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: #8b949e; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid #21262d; }
+  td { padding: 6px 8px; border-bottom: 1px solid #161b22; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-bg { background: #161b22; border-radius: 2px; height: 6px; width: 100%; }
+  .bar-fill { height: 6px; border-radius: 2px; }
+  .reset-marker { fill: #f85149; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>ContextFlame</h1>
+  <div class="subtitle">Context profiling report &mdash; {{call_count}} API calls &mdash; {{session_date}}</div>
+</div>
+
+<div class="metrics-bar" id="metrics-bar"></div>
+
+<div class="chart-container">
+  <div class="chart-title">Token usage per API call (stacked)</div>
+  <div class="legend" id="legend"></div>
+  <div id="chart"></div>
+</div>
+
+<div class="tables">
+  <div class="table-section">
+    <h3>Top tools by token usage</h3>
+    <table id="tools-table">
+      <thead><tr><th>Tool</th><th class="num">Tokens</th><th style="width:40%"></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="table-section">
+    <h3>Top files by token usage</h3>
+    <table id="files-table">
+      <thead><tr><th>File</th><th class="num">Tokens</th><th style="width:40%"></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip" style="display:none;"></div>
+
+<script>
+// Injected data
+const snapshots = {{snapshots_json}};
+const metrics = {{metrics_json}};
+
+// --- Metrics bar ---
+const metricsBar = document.getElementById('metrics-bar');
+function addMetric(label, value, cls) {
+  const div = document.createElement('div');
+  div.className = 'metric';
+  div.innerHTML = `<span class="label">${label}</span><span class="value ${cls || ''}">${value}</span>`;
+  metricsBar.appendChild(div);
+}
+function fmtK(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : n.toString(); }
+function fmtPct(n) { return (n * 100).toFixed(1) + '%'; }
+
+addMetric('API Calls', metrics.total_calls);
+addMetric('Total Input', fmtK(metrics.total_input_tokens));
+addMetric('Total Output', fmtK(metrics.total_output_tokens));
+addMetric('Tool Tokens', fmtK(metrics.total_tool_tokens));
+addMetric('Tool Ratio', fmtPct(metrics.tool_token_ratio), metrics.tool_token_ratio > 0.5 ? 'danger' : metrics.tool_token_ratio > 0.3 ? 'warn' : '');
+addMetric('Duplicate Ratio', fmtPct(metrics.duplicate_ratio), metrics.duplicate_ratio > 0.2 ? 'danger' : metrics.duplicate_ratio > 0.1 ? 'warn' : '');
+addMetric('Peak Util', fmtPct(metrics.peak_utilization), metrics.peak_utilization > 0.9 ? 'danger' : metrics.peak_utilization > 0.7 ? 'warn' : '');
+addMetric('Resets', metrics.resets, metrics.resets > 0 ? 'warn' : '');
+addMetric('Wasted', fmtK(metrics.wasted_tokens), metrics.wasted_tokens > 10000 ? 'danger' : '');
+
+// --- Color scheme ---
+const layerColors = {
+  'system': '#484f58',
+  'history': '#388bfd',
+  'tools': '#f0883e',
+  'output': '#3fb950',
+};
+
+// Tool-specific colors (orange/red family)
+const toolColorScale = d3.scaleOrdinal()
+  .range(['#f0883e', '#da3633', '#d29922', '#e3b341', '#f78166', '#ff7b72', '#ffa657', '#d2a8ff']);
+
+// --- Prepare stacked data ---
+// Collect all unique tool names across all snapshots
+const allToolNames = new Set();
+snapshots.forEach(s => {
+  s.tool_injections.forEach(t => allToolNames.add(t.tool_name));
+});
+const toolNames = Array.from(allToolNames).sort();
+
+// Build per-call data
+const chartData = snapshots.map((s, i) => {
+  const d = {
+    index: i,
+    call_id: s.call_id,
+    context_reset: s.context_reset,
+    system: s.system_tokens,
+    history: s.history_tokens,
+    output: s.output_tokens,
+    _snap: s,
+  };
+  // Group tool tokens by tool name
+  const toolTokens = {};
+  toolNames.forEach(n => toolTokens[n] = 0);
+  s.tool_injections.forEach(t => {
+    toolTokens[t.tool_name] = (toolTokens[t.tool_name] || 0) + t.estimated_tokens;
+  });
+  toolNames.forEach(n => { d['tool_' + n] = toolTokens[n]; });
+  return d;
+});
+
+// Stack keys: system, history, tool_*, output
+const stackKeys = ['system', 'history', ...toolNames.map(n => 'tool_' + n), 'output'];
+
+// --- Chart dimensions ---
+const margin = { top: 20, right: 30, bottom: 40, left: 70 };
+const width = Math.min(window.innerWidth - 64, 1400) - margin.left - margin.right;
+const height = 400 - margin.top - margin.bottom;
+
+const svg = d3.select('#chart')
+  .append('svg')
+  .attr('width', width + margin.left + margin.right)
+  .attr('height', height + margin.top + margin.bottom + 20)
+  .append('g')
+  .attr('transform', `translate(${margin.left},${margin.top})`);
+
+const x = d3.scaleBand()
+  .domain(chartData.map(d => d.index))
+  .range([0, width])
+  .padding(Math.min(0.2, 8 / chartData.length));
+
+const stack = d3.stack().keys(stackKeys);
+const series = stack(chartData);
+
+const yMax = d3.max(series, s => d3.max(s, d => d[1])) || 1;
+const y = d3.scaleLinear()
+  .domain([0, Math.max(yMax, metrics.context_limit)])
+  .range([height, 0]);
+
+// Color for each stack key
+function colorFor(key) {
+  if (key === 'system') return layerColors.system;
+  if (key === 'history') return layerColors.history;
+  if (key === 'output') return layerColors.output;
+  if (key.startsWith('tool_')) return toolColorScale(key.slice(5));
+  return '#8b949e';
+}
+
+// --- Legend ---
+const legendDiv = document.getElementById('legend');
+const legendItems = [
+  { key: 'system', label: 'System Prompt' },
+  { key: 'history', label: 'Conversation History' },
+  ...toolNames.map(n => ({ key: 'tool_' + n, label: n })),
+  { key: 'output', label: 'Output' },
+];
+
+let activeFilter = null;
+legendItems.forEach(item => {
+  const el = document.createElement('div');
+  el.className = 'legend-item';
+  el.dataset.key = item.key;
+  el.innerHTML = `<div class="swatch" style="background:${colorFor(item.key)}"></div>${item.label}`;
+  el.addEventListener('click', () => {
+    if (activeFilter === item.key) {
+      activeFilter = null;
+      document.querySelectorAll('.legend-item').forEach(e => e.classList.remove('dimmed'));
+      svg.selectAll('.layer').attr('opacity', 1);
+    } else {
+      activeFilter = item.key;
+      document.querySelectorAll('.legend-item').forEach(e => {
+        e.classList.toggle('dimmed', e.dataset.key !== item.key);
+      });
+      svg.selectAll('.layer').attr('opacity', d => d.key === item.key ? 1 : 0.08);
+    }
+  });
+  legendDiv.appendChild(el);
+});
+
+// --- Draw stacked bars ---
+svg.selectAll('.layer')
+  .data(series)
+  .join('g')
+  .attr('class', 'layer')
+  .attr('fill', d => colorFor(d.key))
+  .each(function(seriesData) {
+    d3.select(this).selectAll('rect')
+      .data(seriesData)
+      .join('rect')
+      .attr('x', d => x(d.data.index))
+      .attr('y', d => y(d[1]))
+      .attr('height', d => Math.max(0, y(d[0]) - y(d[1])))
+      .attr('width', x.bandwidth())
+      .attr('data-key', seriesData.key)
+      .on('mouseover', function(event, d) { showTooltip(event, d.data._snap, seriesData.key); })
+      .on('mousemove', function(event) { moveTooltip(event); })
+      .on('mouseout', hideTooltip);
+  });
+
+// --- Context limit line ---
+svg.append('line')
+  .attr('x1', 0).attr('x2', width)
+  .attr('y1', y(metrics.context_limit)).attr('y2', y(metrics.context_limit))
+  .attr('stroke', '#f85149').attr('stroke-dasharray', '6,4').attr('stroke-width', 1).attr('opacity', 0.6);
+
+svg.append('text')
+  .attr('x', width - 4).attr('y', y(metrics.context_limit) - 4)
+  .attr('text-anchor', 'end').attr('fill', '#f85149').attr('font-size', '10px')
+  .text(`${fmtK(metrics.context_limit)} context limit`);
+
+// --- Reset markers ---
+chartData.forEach(d => {
+  if (d.context_reset) {
+    svg.append('polygon')
+      .attr('class', 'reset-marker')
+      .attr('points', () => {
+        const cx = x(d.index) + x.bandwidth() / 2;
+        const by = height + 12;
+        return `${cx},${by - 8} ${cx - 5},${by} ${cx + 5},${by}`;
+      });
+  }
+});
+
+// --- Axes ---
+const xTickInterval = Math.max(1, Math.floor(chartData.length / 20));
+svg.append('g')
+  .attr('transform', `translate(0,${height})`)
+  .call(d3.axisBottom(x).tickValues(chartData.filter((_, i) => i % xTickInterval === 0).map(d => d.index)).tickFormat(d => `#${d + 1}`))
+  .selectAll('text').attr('fill', '#8b949e').attr('font-size', '10px');
+
+svg.append('g')
+  .call(d3.axisLeft(y).ticks(6).tickFormat(d => fmtK(d)))
+  .selectAll('text').attr('fill', '#8b949e').attr('font-size', '10px');
+
+svg.selectAll('.domain, .tick line').attr('stroke', '#21262d');
+
+// --- Tooltip ---
+const tooltip = document.getElementById('tooltip');
+
+function showTooltip(event, snap, key) {
+  let label = key;
+  if (key.startsWith('tool_')) label = key.slice(5);
+
+  let html = `<span class="tt-label">Call</span> <span class="tt-value">#${snap.call_id}</span><br>`;
+  html += `<span class="tt-label">Layer</span> <span class="tt-value">${label}</span><br>`;
+  html += `<span class="tt-label">Input tokens</span> <span class="tt-value">${fmtK(snap.input_tokens)}</span><br>`;
+  html += `<span class="tt-label">Output tokens</span> <span class="tt-value">${fmtK(snap.output_tokens)}</span><br>`;
+
+  if (snap.cache_read_tokens > 0) {
+    html += `<span class="tt-label">Cache read</span> <span class="tt-value">${fmtK(snap.cache_read_tokens)}</span><br>`;
+  }
+
+  if (snap.tool_injections.length > 0) {
+    html += `<br><span class="tt-label">Tool injections:</span><br>`;
+    snap.tool_injections.forEach(t => {
+      const dup = t.is_duplicate ? ' <span class="tt-dup">[DUP]</span>' : '';
+      const path = t.file_path ? ` — ${t.file_path}` : '';
+      html += `&nbsp;&nbsp;${t.tool_name}: ${fmtK(t.estimated_tokens)}${path}${dup}<br>`;
+    });
+  }
+
+  if (snap.context_reset) {
+    html += `<br><span class="tt-dup">⚠ Context reset detected</span>`;
+  }
+
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  moveTooltip(event);
+}
+
+function moveTooltip(event) {
+  const pad = 12;
+  let left = event.pageX + pad;
+  let top = event.pageY + pad;
+  if (left + 350 > window.innerWidth) left = event.pageX - 350 - pad;
+  if (top + 200 > window.innerHeight) top = event.pageY - 200;
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = top + 'px';
+}
+
+function hideTooltip() {
+  tooltip.style.display = 'none';
+}
+
+// --- Tables ---
+function populateTable(id, data, labelKey) {
+  const tbody = document.querySelector(`#${id} tbody`);
+  const maxVal = data.length > 0 ? data[0][1] : 1;
+  data.forEach(([name, tokens]) => {
+    const tr = document.createElement('tr');
+    const pct = (tokens / maxVal) * 100;
+    const color = id === 'tools-table' ? toolColorScale(name) : '#388bfd';
+    tr.innerHTML = `
+      <td>${name}</td>
+      <td class="num">${fmtK(tokens)}</td>
+      <td><div class="bar-bg"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+populateTable('tools-table', metrics.top_tools, 0);
+populateTable('files-table', metrics.top_files, 0);
+</script>
+</body>
+</html>
