@@ -47,14 +47,16 @@ Report: /home/you/contextflame-report.html
 
 Open `contextflame-report.html` in a browser.
 
-### Pass args through
+### Options
 
 ```bash
-uv run contextflame claude --model opus
-uv run contextflame claude --resume
+uv run contextflame --port 8011 claude          # use a specific port
+uv run contextflame claude --model opus          # pass args through to claude
+uv run contextflame claude --resume              # works with any claude flags
+uv run contextflame --no-report claude           # skip report generation
 ```
 
-Everything after `contextflame` is passed directly to `claude`.
+Everything after `contextflame [options]` is passed directly to the wrapped command.
 
 ## CLI Reference
 
