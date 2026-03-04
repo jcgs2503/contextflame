@@ -10,17 +10,15 @@ ContextFlame answers: **where are my tokens going?**
 
 ## How It Works
 
-ContextFlame runs a local proxy between Claude Code and the Anthropic API. It intercepts every API call, attributes token usage by source, and logs everything to a JSONL file you can analyze later.
+ContextFlame wraps your `claude` command with a local proxy, like `perf record` or `strace`. It intercepts every API call, attributes token usage by source, and generates a flamegraph when you're done.
 
 ```
-Claude Code → localhost:8011 (ContextFlame proxy) → api.anthropic.com
+contextflame claude → proxy (auto port) → api.anthropic.com
 ```
 
-No Claude Code modifications needed — just set one environment variable.
+No config. No background processes. When Claude exits, the proxy dies and you get your report.
 
 ## Quick Start
-
-### Install
 
 ```bash
 git clone https://github.com/jcgs2503/contextflame.git
@@ -29,70 +27,56 @@ cd contextflame
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
 
-### 1. Start the proxy
+### Profile a session
 
 ```bash
-uv run contextflame start
+uv run contextflame claude
 ```
 
-This starts the proxy on port 8011 and logs to `contextflame.jsonl` in the current directory.
+That's it. Use Claude Code as normal. When you exit, ContextFlame generates `contextflame-report.html` and prints a summary:
 
-### 2. Point Claude Code at the proxy
+```
+ContextFlame profiling → claude
+Proxy on :52431 | Log: contextflame-1709571234.jsonl
+────────────────────────────────────────────────────
+  ... your Claude Code session ...
+────────────────────────────────────────────────────
+Report: /home/you/contextflame-report.html
+  47 calls | 1,234,567 input tokens | 42% tool | 18% duplicate
+```
 
-In the terminal where you run Claude Code:
+Open `contextflame-report.html` in a browser.
+
+### Pass args through
 
 ```bash
-export ANTHROPIC_BASE_URL=http://localhost:8011
+uv run contextflame claude --model opus
+uv run contextflame claude --resume
 ```
 
-Then use Claude Code as normal. Every API call flows through the proxy and gets logged.
-
-### 3. Generate a report
-
-After your session (or anytime during):
-
-```bash
-uv run contextflame report --log contextflame.jsonl
-```
-
-This produces `report.html` — open it in a browser to see your flamegraph.
-
-### 4. Watch live (optional)
-
-In a separate terminal, tail token usage in real time with sparklines:
-
-```bash
-uv run contextflame watch --log contextflame.jsonl
-```
-
-```
-ContextFlame watch — press Ctrl+C to stop
-────────────────────────────────────────────────────────────────────────
-#a1b2c3d4 ▃▃▃▃▃▃░░░░░░░░░░░░░░ in: 32.1k out: 1.2k tool: 18.4k  Read×3 Grep×1
-#e5f6a7b8 ▄▄▄▄▄▄▄▄░░░░░░░░░░░░ in: 45.8k out:  842  tool: 22.1k  Read×2 Bash×1
-#c9d0e1f2 ▆▆▆▆▆▆▆▆▆▆▆░░░░░░░░░ in: 98.3k out: 2.1k tool: 51.2k  Read×5 Grep×2 Bash×1
-```
+Everything after `contextflame` is passed directly to `claude`.
 
 ## CLI Reference
 
-### `contextflame start`
+### `contextflame <command> [args...]`
 
-Start the MITM proxy server.
+Profile any command. Starts a proxy, runs the command with `ANTHROPIC_BASE_URL` pointed at it, generates a report when it exits.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port` | `8011` | Port to run the proxy on |
-| `--host` | `0.0.0.0` | Host to bind to |
-| `--log` | `contextflame.jsonl` | Path to the JSONL log file |
+| `--port` | auto | Proxy port (0 = pick a free port) |
+| `--log` | auto (timestamped) | Path to the JSONL log file |
+| `--output` | `contextflame-report.html` | Report output path |
+| `--no-report` | off | Skip report generation |
 
 ### `contextflame report`
 
-Generate an interactive HTML flamegraph from a recorded session.
+Generate a report from an existing log file.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--log` | *(required)* | Path to the JSONL log file |
-| `--output` | `report.html` | Output HTML file path |
+| `--output` | `contextflame-report.html` | Output HTML file path |
 
 ### `contextflame watch`
 
@@ -103,17 +87,34 @@ Live-tail token usage in the terminal with sparkline bars.
 | `--log` | *(required)* | Path to the JSONL log file |
 | `--interval` | `1.0` | Refresh interval in seconds |
 
+```
+ContextFlame watch — press Ctrl+C to stop
+────────────────────────────────────────────────────────────────────────
+#a1b2c3d4 ▃▃▃▃▃▃░░░░░░░░░░░░░░ in: 32.1k out: 1.2k tool: 18.4k  Read×3 Grep×1
+#e5f6a7b8 ▄▄▄▄▄▄▄▄░░░░░░░░░░░░ in: 45.8k out:  842  tool: 22.1k  Read×2 Bash×1
+#c9d0e1f2 ▆▆▆▆▆▆▆▆▆▆▆░░░░░░░░░ in: 98.3k out: 2.1k tool: 51.2k  Read×5 Grep×2 Bash×1
+```
+
+### `contextflame start`
+
+Run the proxy server standalone (for advanced use or if you want separate terminals).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `8011` | Port to run the proxy on |
+| `--host` | `0.0.0.0` | Host to bind to |
+| `--log` | `contextflame.jsonl` | Path to the JSONL log file |
+
 ## The Report
 
-The HTML report is a self-contained file (no server needed) with:
+The HTML report is a self-contained file with:
 
-- **Metrics bar** — total calls, input/output tokens, tool token ratio, duplicate ratio, peak context utilization, context resets, wasted tokens
-- **Stacked bar chart** — each API call broken down by token source:
-  - Gray: system prompt (usually flat)
-  - Blue: conversation history (grows over session)
-  - Orange/red: tool injections by tool type (the interesting part)
-  - Green: output tokens
-- **Interactive features** — hover for per-call details, click legend items to isolate a layer, red markers for context resets, dashed line at 200k context limit
+- **Metrics bar** — total calls, input/output tokens, tool token ratio, duplicate ratio, peak utilization, context resets, wasted tokens
+- **Flamegraph** — width proportional to tokens consumed, click to zoom in:
+  - Session → API calls → categories (System/History/Tools/Output) → individual tool results
+  - Breadcrumb navigation to zoom back out
+  - Duplicate content shown with red stripe pattern
+- **Token timeline** — stacked bar chart showing context growth over the session
 - **Top tables** — tools and files ranked by cumulative token consumption
 
 ## What It Tracks
@@ -132,7 +133,7 @@ The HTML report is a self-contained file (no server needed) with:
 
 ```
 src/contextflame/
-├── cli.py           # Click CLI — start, report, watch
+├── cli.py           # Click CLI — wrap command, start, report, watch
 ├── proxy.py         # Starlette async proxy, handles streaming + non-streaming
 ├── attributor.py    # Parses request/response, classifies tokens by source
 ├── storage.py       # ContextSnapshot/ToolInjection dataclasses, JSONL I/O
@@ -145,9 +146,5 @@ src/contextflame/
 ## Development
 
 ```bash
-# Run tests
 uv run pytest tests/ -v
-
-# Run the proxy in development
-uv run contextflame start --port 8011
 ```

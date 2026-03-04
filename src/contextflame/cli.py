@@ -3,17 +3,122 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import socket
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import click
 
 
-@click.group()
-def main():
-    """ContextFlame — context profiling for Claude Code sessions."""
-    pass
+@click.group(invoke_without_command=True)
+@click.argument("command", nargs=-1, required=False)
+@click.option("--port", default=0, help="Proxy port (0 = auto-pick).")
+@click.option("--log", "log_path", default=None, help="Path to JSONL log file.")
+@click.option("--output", "output_path", default="contextflame-report.html", help="Report output path.")
+@click.option("--no-report", is_flag=True, help="Skip report generation after session.")
+@click.pass_context
+def main(ctx, command, port, log_path, output_path, no_report):
+    """ContextFlame — context profiling for Claude Code sessions.
+
+    \b
+    Usage:
+      contextflame claude              Profile a Claude Code session
+      contextflame claude --model opus  Pass args through to claude
+      contextflame report --log FILE   Generate report from existing log
+      contextflame watch --log FILE    Live tail of token usage
+      contextflame start               Run the proxy server standalone
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if not command:
+        click.echo(ctx.get_help())
+        return
+
+    _run_profiled(list(command), port, log_path, output_path, no_report)
+
+
+def _find_free_port() -> int:
+    """Find an available port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _run_profiled(command: list[str], port: int, log_path: str | None, output_path: str, no_report: bool):
+    """Start proxy, run command, generate report."""
+    import uvicorn
+    from contextflame.proxy import create_app
+
+    if port == 0:
+        port = _find_free_port()
+
+    if log_path is None:
+        log_path = f"contextflame-{int(time.time())}.jsonl"
+    log = Path(log_path)
+
+    app = create_app(log_path=log)
+
+    # Start proxy in a background thread
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning",
+    ))
+    proxy_thread = threading.Thread(target=server.run, daemon=True)
+    proxy_thread.start()
+
+    # Wait for the server to be ready
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                break
+        except OSError:
+            time.sleep(0.05)
+
+    click.echo(f"ContextFlame profiling → {' '.join(command)}")
+    click.echo(f"Proxy on :{port} | Log: {log}")
+    click.echo("─" * 52)
+
+    # Run the target command with ANTHROPIC_BASE_URL set
+    env = os.environ.copy()
+    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
+
+    try:
+        result = subprocess.run(command, env=env)
+        exit_code = result.returncode
+    except KeyboardInterrupt:
+        exit_code = 130
+
+    click.echo("─" * 52)
+
+    # Shut down the proxy
+    server.should_exit = True
+    proxy_thread.join(timeout=3.0)
+
+    # Generate report
+    if not no_report and log.exists() and log.stat().st_size > 0:
+        from contextflame.flamegraph import render_report
+        from contextflame.metrics import compute_metrics
+        from contextflame.storage import read_all_snapshots
+
+        snapshots = read_all_snapshots(log)
+        if snapshots:
+            metrics = compute_metrics(snapshots)
+            out = render_report(snapshots, Path(output_path), metrics)
+            click.echo(f"Report: {out.resolve()}")
+            click.echo(f"  {metrics.total_calls} calls | "
+                        f"{metrics.total_input_tokens:,} input tokens | "
+                        f"{metrics.tool_token_ratio:.0%} tool | "
+                        f"{metrics.duplicate_ratio:.0%} duplicate")
+    elif not no_report:
+        click.echo("No API calls recorded.")
+
+    sys.exit(exit_code)
 
 
 @main.command()
@@ -21,17 +126,16 @@ def main():
 @click.option("--log", "log_path", default="contextflame.jsonl", help="Path to JSONL log file.")
 @click.option("--host", default="0.0.0.0", help="Host to bind to.")
 def start(port: int, log_path: str, host: str):
-    """Start the ContextFlame proxy server."""
+    """Run the proxy server standalone (advanced)."""
     import uvicorn
     from contextflame.proxy import create_app
 
     log = Path(log_path)
     app = create_app(log_path=log)
 
-    click.echo(f"ContextFlame proxy starting on {host}:{port}")
-    click.echo(f"Logging to {log.resolve()}")
+    click.echo(f"ContextFlame proxy on {host}:{port}")
+    click.echo(f"Log: {log.resolve()}")
     click.echo()
-    click.echo("Point Claude Code at this proxy:")
     click.echo(f"  export ANTHROPIC_BASE_URL=http://localhost:{port}")
     click.echo()
 

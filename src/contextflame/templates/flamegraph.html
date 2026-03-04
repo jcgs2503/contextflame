@@ -8,42 +8,78 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; background: #0d1117; color: #c9d1d9; }
+
   .header { padding: 20px 32px; border-bottom: 1px solid #21262d; }
   .header h1 { font-size: 20px; color: #f0f6fc; margin-bottom: 4px; }
   .header .subtitle { font-size: 13px; color: #8b949e; }
+
   .metrics-bar {
     display: flex; gap: 24px; padding: 16px 32px;
     border-bottom: 1px solid #21262d; flex-wrap: wrap;
   }
-  .metric {
-    display: flex; flex-direction: column; gap: 2px;
-  }
+  .metric { display: flex; flex-direction: column; gap: 2px; }
   .metric .label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
   .metric .value { font-size: 18px; font-weight: 600; color: #f0f6fc; }
   .metric .value.warn { color: #d29922; }
   .metric .value.danger { color: #f85149; }
-  .chart-container { padding: 24px 32px; }
-  .chart-title { font-size: 14px; color: #8b949e; margin-bottom: 12px; }
-  .legend {
-    display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap;
+
+  .section { padding: 24px 32px; }
+  .section-title { font-size: 14px; color: #8b949e; margin-bottom: 12px; }
+
+  /* --- Flamegraph --- */
+  .flame-container { position: relative; }
+  .breadcrumb {
+    font-size: 12px; color: #8b949e; margin-bottom: 8px; min-height: 20px;
   }
-  .legend-item {
-    display: flex; align-items: center; gap: 6px; font-size: 12px;
-    cursor: pointer; opacity: 0.9; user-select: none;
+  .breadcrumb span { cursor: pointer; color: #388bfd; }
+  .breadcrumb span:hover { text-decoration: underline; }
+  .breadcrumb .sep { color: #484f58; cursor: default; }
+  .breadcrumb .current { color: #f0f6fc; cursor: default; }
+
+  .flame-row {
+    display: flex; width: 100%; cursor: pointer; position: relative;
   }
-  .legend-item:hover { opacity: 1; }
-  .legend-item .swatch { width: 12px; height: 12px; border-radius: 2px; }
-  .legend-item.dimmed { opacity: 0.3; }
-  svg { display: block; }
+  .flame-cell {
+    height: 28px; display: flex; align-items: center; padding: 0 6px;
+    font-size: 11px; color: #f0f6fc; overflow: hidden; white-space: nowrap;
+    text-overflow: ellipsis; border-right: 1px solid #0d1117;
+    border-bottom: 1px solid rgba(13,17,23,0.6); transition: filter 0.1s;
+    min-width: 0;
+  }
+  .flame-cell:hover { filter: brightness(1.25); }
+  .flame-cell.too-small { font-size: 0; padding: 0; }
+  .flame-cell .cell-label { overflow: hidden; text-overflow: ellipsis; }
+  .flame-cell .cell-tokens {
+    margin-left: auto; padding-left: 8px; font-size: 10px;
+    color: rgba(240,246,252,0.7); flex-shrink: 0;
+  }
+
+  .flame-cell.dup { background-image: repeating-linear-gradient(
+    -45deg, transparent, transparent 3px, rgba(248,81,73,0.15) 3px, rgba(248,81,73,0.15) 6px
+  ); }
+
   .tooltip {
-    position: absolute; pointer-events: none; background: #161b22;
+    position: fixed; pointer-events: none; background: #161b22;
     border: 1px solid #30363d; border-radius: 6px; padding: 10px 14px;
     font-size: 12px; line-height: 1.6; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-    z-index: 10; max-width: 350px;
+    z-index: 100; max-width: 400px;
   }
   .tooltip .tt-label { color: #8b949e; }
   .tooltip .tt-value { color: #f0f6fc; font-weight: 500; }
-  .tooltip .tt-dup { color: #f85149; }
+  .tooltip .tt-dup { color: #f85149; font-weight: 500; }
+
+  /* --- Timeline --- */
+  .timeline-container { position: relative; }
+
+  /* --- Legend --- */
+  .legend { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .legend-item {
+    display: flex; align-items: center; gap: 6px; font-size: 12px;
+    user-select: none;
+  }
+  .legend-item .swatch { width: 12px; height: 12px; border-radius: 2px; }
+
+  /* --- Tables --- */
   .tables { padding: 0 32px 32px; display: flex; gap: 32px; flex-wrap: wrap; }
   .table-section { flex: 1; min-width: 300px; }
   .table-section h3 { font-size: 14px; color: #8b949e; margin-bottom: 8px; }
@@ -53,7 +89,6 @@
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .bar-bg { background: #161b22; border-radius: 2px; height: 6px; width: 100%; }
   .bar-fill { height: 6px; border-radius: 2px; }
-  .reset-marker { fill: #f85149; }
 </style>
 </head>
 <body>
@@ -65,10 +100,18 @@
 
 <div class="metrics-bar" id="metrics-bar"></div>
 
-<div class="chart-container">
-  <div class="chart-title">Token usage per API call (stacked)</div>
+<div class="section">
+  <div class="section-title">Flamegraph &mdash; click to zoom, width = tokens</div>
+  <div class="flame-container">
+    <div class="breadcrumb" id="breadcrumb"></div>
+    <div id="flamegraph"></div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Token timeline per API call</div>
   <div class="legend" id="legend"></div>
-  <div id="chart"></div>
+  <div class="timeline-container" id="timeline"></div>
 </div>
 
 <div class="tables">
@@ -91,11 +134,13 @@
 <div class="tooltip" id="tooltip" style="display:none;"></div>
 
 <script>
-// Injected data
 const snapshots = {{snapshots_json}};
 const metrics = {{metrics_json}};
 
-// --- Metrics bar ---
+function fmtK(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : n.toString(); }
+function fmtPct(n) { return (n * 100).toFixed(1) + '%'; }
+
+// ─── Metrics bar ────────────────────────────────────────────────────────────
 const metricsBar = document.getElementById('metrics-bar');
 function addMetric(label, value, cls) {
   const div = document.createElement('div');
@@ -103,9 +148,6 @@ function addMetric(label, value, cls) {
   div.innerHTML = `<span class="label">${label}</span><span class="value ${cls || ''}">${value}</span>`;
   metricsBar.appendChild(div);
 }
-function fmtK(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'k' : n.toString(); }
-function fmtPct(n) { return (n * 100).toFixed(1) + '%'; }
-
 addMetric('API Calls', metrics.total_calls);
 addMetric('Total Input', fmtK(metrics.total_input_tokens));
 addMetric('Total Output', fmtK(metrics.total_output_tokens));
@@ -116,199 +158,283 @@ addMetric('Peak Util', fmtPct(metrics.peak_utilization), metrics.peak_utilizatio
 addMetric('Resets', metrics.resets, metrics.resets > 0 ? 'warn' : '');
 addMetric('Wasted', fmtK(metrics.wasted_tokens), metrics.wasted_tokens > 10000 ? 'danger' : '');
 
-// --- Color scheme ---
-const layerColors = {
-  'system': '#484f58',
-  'history': '#388bfd',
-  'tools': '#f0883e',
-  'output': '#3fb950',
+// ─── Color scheme ───────────────────────────────────────────────────────────
+const colors = {
+  system: '#484f58',
+  history: '#388bfd',
+  output: '#3fb950',
 };
-
-// Tool-specific colors (orange/red family)
-const toolColorScale = d3.scaleOrdinal()
-  .range(['#f0883e', '#da3633', '#d29922', '#e3b341', '#f78166', '#ff7b72', '#ffa657', '#d2a8ff']);
-
-// --- Prepare stacked data ---
-// Collect all unique tool names across all snapshots
-const allToolNames = new Set();
-snapshots.forEach(s => {
-  s.tool_injections.forEach(t => allToolNames.add(t.tool_name));
-});
-const toolNames = Array.from(allToolNames).sort();
-
-// Build per-call data
-const chartData = snapshots.map((s, i) => {
-  const d = {
-    index: i,
-    call_id: s.call_id,
-    context_reset: s.context_reset,
-    system: s.system_tokens,
-    history: s.history_tokens,
-    output: s.output_tokens,
-    _snap: s,
-  };
-  // Group tool tokens by tool name
-  const toolTokens = {};
-  toolNames.forEach(n => toolTokens[n] = 0);
-  s.tool_injections.forEach(t => {
-    toolTokens[t.tool_name] = (toolTokens[t.tool_name] || 0) + t.estimated_tokens;
-  });
-  toolNames.forEach(n => { d['tool_' + n] = toolTokens[n]; });
-  return d;
-});
-
-// Stack keys: system, history, tool_*, output
-const stackKeys = ['system', 'history', ...toolNames.map(n => 'tool_' + n), 'output'];
-
-// --- Chart dimensions ---
-const margin = { top: 20, right: 30, bottom: 40, left: 70 };
-const width = Math.min(window.innerWidth - 64, 1400) - margin.left - margin.right;
-const height = 400 - margin.top - margin.bottom;
-
-const svg = d3.select('#chart')
-  .append('svg')
-  .attr('width', width + margin.left + margin.right)
-  .attr('height', height + margin.top + margin.bottom + 20)
-  .append('g')
-  .attr('transform', `translate(${margin.left},${margin.top})`);
-
-const x = d3.scaleBand()
-  .domain(chartData.map(d => d.index))
-  .range([0, width])
-  .padding(Math.min(0.2, 8 / chartData.length));
-
-const stack = d3.stack().keys(stackKeys);
-const series = stack(chartData);
-
-const yMax = d3.max(series, s => d3.max(s, d => d[1])) || 1;
-const y = d3.scaleLinear()
-  .domain([0, Math.max(yMax, metrics.context_limit)])
-  .range([height, 0]);
-
-// Color for each stack key
-function colorFor(key) {
-  if (key === 'system') return layerColors.system;
-  if (key === 'history') return layerColors.history;
-  if (key === 'output') return layerColors.output;
-  if (key.startsWith('tool_')) return toolColorScale(key.slice(5));
-  return '#8b949e';
+const toolPalette = ['#f0883e','#da3633','#d29922','#e3b341','#f78166','#ff7b72','#ffa657','#d2a8ff','#79c0ff','#56d364'];
+const toolColorMap = {};
+let toolColorIdx = 0;
+function toolColor(name) {
+  if (!toolColorMap[name]) toolColorMap[name] = toolPalette[toolColorIdx++ % toolPalette.length];
+  return toolColorMap[name];
+}
+function nodeColor(node) {
+  if (node.type === 'root') return '#21262d';
+  if (node.type === 'call') return '#30363d';
+  if (node.type === 'system') return colors.system;
+  if (node.type === 'history') return colors.history;
+  if (node.type === 'output') return colors.output;
+  if (node.type === 'tools') return '#5a3e1e';
+  if (node.type === 'tool') return toolColor(node.toolName);
+  return '#484f58';
 }
 
-// --- Legend ---
-const legendDiv = document.getElementById('legend');
-const legendItems = [
-  { key: 'system', label: 'System Prompt' },
-  { key: 'history', label: 'Conversation History' },
-  ...toolNames.map(n => ({ key: 'tool_' + n, label: n })),
-  { key: 'output', label: 'Output' },
-];
+// ─── Build flamegraph tree ──────────────────────────────────────────────────
+// Hierarchy:
+//   root (session)
+//     call #1
+//       system prompt
+//       history
+//       tools (aggregate)
+//         Read /src/main.py
+//         Grep "pattern"
+//         ...
+//       output
+//     call #2
+//       ...
 
-let activeFilter = null;
-legendItems.forEach(item => {
-  const el = document.createElement('div');
-  el.className = 'legend-item';
-  el.dataset.key = item.key;
-  el.innerHTML = `<div class="swatch" style="background:${colorFor(item.key)}"></div>${item.label}`;
-  el.addEventListener('click', () => {
-    if (activeFilter === item.key) {
-      activeFilter = null;
-      document.querySelectorAll('.legend-item').forEach(e => e.classList.remove('dimmed'));
-      svg.selectAll('.layer').attr('opacity', 1);
-    } else {
-      activeFilter = item.key;
-      document.querySelectorAll('.legend-item').forEach(e => {
-        e.classList.toggle('dimmed', e.dataset.key !== item.key);
+function buildTree() {
+  const root = {
+    name: 'Session',
+    type: 'root',
+    tokens: 0,
+    children: [],
+    meta: {},
+  };
+
+  snapshots.forEach((snap, i) => {
+    const callTokens = snap.input_tokens + snap.output_tokens;
+    const callNode = {
+      name: `Call #${i + 1}`,
+      type: 'call',
+      tokens: callTokens,
+      children: [],
+      meta: { call_id: snap.call_id, context_reset: snap.context_reset, snap },
+    };
+
+    // System prompt
+    if (snap.system_tokens > 0) {
+      callNode.children.push({
+        name: 'System Prompt',
+        type: 'system',
+        tokens: snap.system_tokens,
+        children: [],
+        meta: {},
       });
-      svg.selectAll('.layer').attr('opacity', d => d.key === item.key ? 1 : 0.08);
     }
-  });
-  legendDiv.appendChild(el);
-});
 
-// --- Draw stacked bars ---
-svg.selectAll('.layer')
-  .data(series)
-  .join('g')
-  .attr('class', 'layer')
-  .attr('fill', d => colorFor(d.key))
-  .each(function(seriesData) {
-    d3.select(this).selectAll('rect')
-      .data(seriesData)
-      .join('rect')
-      .attr('x', d => x(d.data.index))
-      .attr('y', d => y(d[1]))
-      .attr('height', d => Math.max(0, y(d[0]) - y(d[1])))
-      .attr('width', x.bandwidth())
-      .attr('data-key', seriesData.key)
-      .on('mouseover', function(event, d) { showTooltip(event, d.data._snap, seriesData.key); })
-      .on('mousemove', function(event) { moveTooltip(event); })
-      .on('mouseout', hideTooltip);
-  });
-
-// --- Context limit line ---
-svg.append('line')
-  .attr('x1', 0).attr('x2', width)
-  .attr('y1', y(metrics.context_limit)).attr('y2', y(metrics.context_limit))
-  .attr('stroke', '#f85149').attr('stroke-dasharray', '6,4').attr('stroke-width', 1).attr('opacity', 0.6);
-
-svg.append('text')
-  .attr('x', width - 4).attr('y', y(metrics.context_limit) - 4)
-  .attr('text-anchor', 'end').attr('fill', '#f85149').attr('font-size', '10px')
-  .text(`${fmtK(metrics.context_limit)} context limit`);
-
-// --- Reset markers ---
-chartData.forEach(d => {
-  if (d.context_reset) {
-    svg.append('polygon')
-      .attr('class', 'reset-marker')
-      .attr('points', () => {
-        const cx = x(d.index) + x.bandwidth() / 2;
-        const by = height + 12;
-        return `${cx},${by - 8} ${cx - 5},${by} ${cx + 5},${by}`;
+    // History
+    if (snap.history_tokens > 0) {
+      callNode.children.push({
+        name: 'Conversation History',
+        type: 'history',
+        tokens: snap.history_tokens,
+        children: [],
+        meta: {},
       });
-  }
-});
+    }
 
-// --- Axes ---
-const xTickInterval = Math.max(1, Math.floor(chartData.length / 20));
-svg.append('g')
-  .attr('transform', `translate(0,${height})`)
-  .call(d3.axisBottom(x).tickValues(chartData.filter((_, i) => i % xTickInterval === 0).map(d => d.index)).tickFormat(d => `#${d + 1}`))
-  .selectAll('text').attr('fill', '#8b949e').attr('font-size', '10px');
+    // Tools
+    if (snap.tool_injections.length > 0) {
+      const toolsNode = {
+        name: 'Tool Injections',
+        type: 'tools',
+        tokens: snap.total_tool_tokens,
+        children: [],
+        meta: {},
+      };
 
-svg.append('g')
-  .call(d3.axisLeft(y).ticks(6).tickFormat(d => fmtK(d)))
-  .selectAll('text').attr('fill', '#8b949e').attr('font-size', '10px');
+      snap.tool_injections.forEach(inj => {
+        const label = inj.file_path
+          ? `${inj.tool_name} ${inj.file_path}`
+          : inj.tool_name;
+        toolsNode.children.push({
+          name: label,
+          type: 'tool',
+          toolName: inj.tool_name,
+          tokens: inj.estimated_tokens,
+          children: [],
+          meta: {
+            tool_use_id: inj.tool_use_id,
+            file_path: inj.file_path,
+            byte_size: inj.byte_size,
+            is_duplicate: inj.is_duplicate,
+          },
+        });
+      });
 
-svg.selectAll('.domain, .tick line').attr('stroke', '#21262d');
+      callNode.children.push(toolsNode);
+    }
 
-// --- Tooltip ---
+    // Output
+    if (snap.output_tokens > 0) {
+      callNode.children.push({
+        name: 'Output',
+        type: 'output',
+        tokens: snap.output_tokens,
+        children: [],
+        meta: {},
+      });
+    }
+
+    root.children.push(callNode);
+    root.tokens += callTokens;
+  });
+
+  return root;
+}
+
+const tree = buildTree();
+
+// ─── Render flamegraph ──────────────────────────────────────────────────────
+const flameDiv = document.getElementById('flamegraph');
+const breadcrumbDiv = document.getElementById('breadcrumb');
 const tooltip = document.getElementById('tooltip');
 
-function showTooltip(event, snap, key) {
-  let label = key;
-  if (key.startsWith('tool_')) label = key.slice(5);
+let currentZoom = tree;
+let zoomStack = []; // for breadcrumb navigation
 
-  let html = `<span class="tt-label">Call</span> <span class="tt-value">#${snap.call_id}</span><br>`;
-  html += `<span class="tt-label">Layer</span> <span class="tt-value">${label}</span><br>`;
-  html += `<span class="tt-label">Input tokens</span> <span class="tt-value">${fmtK(snap.input_tokens)}</span><br>`;
-  html += `<span class="tt-label">Output tokens</span> <span class="tt-value">${fmtK(snap.output_tokens)}</span><br>`;
+function renderFlame(node) {
+  flameDiv.innerHTML = '';
+  currentZoom = node;
+  renderBreadcrumb();
 
-  if (snap.cache_read_tokens > 0) {
-    html += `<span class="tt-label">Cache read</span> <span class="tt-value">${fmtK(snap.cache_read_tokens)}</span><br>`;
-  }
-
-  if (snap.tool_injections.length > 0) {
-    html += `<br><span class="tt-label">Tool injections:</span><br>`;
-    snap.tool_injections.forEach(t => {
-      const dup = t.is_duplicate ? ' <span class="tt-dup">[DUP]</span>' : '';
-      const path = t.file_path ? ` — ${t.file_path}` : '';
-      html += `&nbsp;&nbsp;${t.tool_name}: ${fmtK(t.estimated_tokens)}${path}${dup}<br>`;
+  // Collect rows: each depth level of the tree from current zoom
+  const rows = [];
+  function collectRow(nodes, depth) {
+    if (nodes.length === 0) return;
+    rows.push(nodes);
+    const nextLevel = [];
+    nodes.forEach(n => {
+      if (n.children && n.children.length > 0) {
+        n.children.forEach(c => nextLevel.push(c));
+      }
     });
+    if (nextLevel.length > 0) collectRow(nextLevel, depth + 1);
   }
 
-  if (snap.context_reset) {
-    html += `<br><span class="tt-dup">⚠ Context reset detected</span>`;
+  // Start from the zoom node: first row is the node itself, then its children
+  collectRow([node], 0);
+
+  const totalTokens = node.tokens || 1;
+
+  // Render rows bottom-up (root at bottom, leaves at top) — like perf flamegraphs
+  rows.reverse().forEach(rowNodes => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'flame-row';
+
+    rowNodes.forEach(n => {
+      const pct = (n.tokens / totalTokens) * 100;
+      const cell = document.createElement('div');
+      cell.className = 'flame-cell' + (pct < 2 ? ' too-small' : '') + (n.meta.is_duplicate ? ' dup' : '');
+      cell.style.width = pct + '%';
+      cell.style.backgroundColor = nodeColor(n);
+
+      if (pct >= 2) {
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'cell-label';
+        labelSpan.textContent = n.name;
+        cell.appendChild(labelSpan);
+
+        if (pct >= 6) {
+          const tokSpan = document.createElement('span');
+          tokSpan.className = 'cell-tokens';
+          tokSpan.textContent = fmtK(n.tokens);
+          cell.appendChild(tokSpan);
+        }
+      }
+
+      // Click to zoom
+      if (n.children && n.children.length > 0) {
+        cell.addEventListener('click', (e) => {
+          e.stopPropagation();
+          zoomStack.push(currentZoom);
+          renderFlame(n);
+        });
+      }
+
+      // Hover tooltip
+      cell.addEventListener('mouseover', (e) => showFlameTooltip(e, n));
+      cell.addEventListener('mousemove', (e) => moveTooltip(e));
+      cell.addEventListener('mouseout', () => { tooltip.style.display = 'none'; });
+
+      rowEl.appendChild(cell);
+    });
+
+    flameDiv.appendChild(rowEl);
+  });
+}
+
+function renderBreadcrumb() {
+  breadcrumbDiv.innerHTML = '';
+  const path = [...zoomStack, currentZoom];
+
+  path.forEach((node, i) => {
+    if (i > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'sep';
+      sep.textContent = ' / ';
+      breadcrumbDiv.appendChild(sep);
+    }
+
+    const span = document.createElement('span');
+    span.textContent = node.name;
+
+    if (i === path.length - 1) {
+      span.className = 'current';
+    } else {
+      span.addEventListener('click', () => {
+        // Navigate back to this level
+        zoomStack = zoomStack.slice(0, i);
+        renderFlame(node);
+      });
+    }
+    breadcrumbDiv.appendChild(span);
+  });
+}
+
+function showFlameTooltip(event, node) {
+  let html = `<span class="tt-value">${node.name}</span><br>`;
+  html += `<span class="tt-label">Tokens</span> <span class="tt-value">${fmtK(node.tokens)}</span>`;
+
+  if (currentZoom.tokens > 0) {
+    const pct = ((node.tokens / currentZoom.tokens) * 100).toFixed(1);
+    html += ` <span class="tt-label">(${pct}% of view)</span>`;
+  }
+  html += '<br>';
+
+  if (node.type === 'call' && node.meta.snap) {
+    const s = node.meta.snap;
+    html += `<span class="tt-label">Input</span> <span class="tt-value">${fmtK(s.input_tokens)}</span><br>`;
+    html += `<span class="tt-label">Output</span> <span class="tt-value">${fmtK(s.output_tokens)}</span><br>`;
+    if (s.cache_read_tokens > 0) {
+      html += `<span class="tt-label">Cache read</span> <span class="tt-value">${fmtK(s.cache_read_tokens)}</span><br>`;
+    }
+    if (s.context_reset) {
+      html += `<span class="tt-dup">Context reset detected</span><br>`;
+    }
+    if (s.tool_injections.length > 0) {
+      html += `<span class="tt-label">${s.tool_injections.length} tool injection(s)</span><br>`;
+    }
+  }
+
+  if (node.type === 'tool') {
+    if (node.meta.file_path) {
+      html += `<span class="tt-label">File</span> <span class="tt-value">${node.meta.file_path}</span><br>`;
+    }
+    if (node.meta.byte_size) {
+      html += `<span class="tt-label">Size</span> <span class="tt-value">${fmtK(node.meta.byte_size)} bytes</span><br>`;
+    }
+    if (node.meta.is_duplicate) {
+      html += `<span class="tt-dup">Duplicate — content already seen in earlier call</span><br>`;
+    }
+  }
+
+  if (node.children && node.children.length > 0) {
+    html += `<span class="tt-label" style="font-size:11px;opacity:0.7">Click to zoom in</span>`;
   }
 
   tooltip.innerHTML = html;
@@ -318,37 +444,141 @@ function showTooltip(event, snap, key) {
 
 function moveTooltip(event) {
   const pad = 12;
-  let left = event.pageX + pad;
-  let top = event.pageY + pad;
-  if (left + 350 > window.innerWidth) left = event.pageX - 350 - pad;
-  if (top + 200 > window.innerHeight) top = event.pageY - 200;
+  let left = event.clientX + pad;
+  let top = event.clientY + pad;
+  const rect = tooltip.getBoundingClientRect();
+  if (left + 400 > window.innerWidth) left = event.clientX - 400 - pad;
+  if (top + 200 > window.innerHeight) top = event.clientY - 200;
   tooltip.style.left = left + 'px';
   tooltip.style.top = top + 'px';
 }
 
-function hideTooltip() {
-  tooltip.style.display = 'none';
+// Initial render
+renderFlame(tree);
+
+// ─── Timeline (stacked bar chart) ──────────────────────────────────────────
+const timelineDiv = document.getElementById('timeline');
+
+const allToolNames = new Set();
+snapshots.forEach(s => s.tool_injections.forEach(t => allToolNames.add(t.tool_name)));
+const toolNames = Array.from(allToolNames).sort();
+
+// Pre-assign colors
+toolNames.forEach(n => toolColor(n));
+
+// Legend
+const legendDiv = document.getElementById('legend');
+[
+  { label: 'System', color: colors.system },
+  { label: 'History', color: colors.history },
+  ...toolNames.map(n => ({ label: n, color: toolColor(n) })),
+  { label: 'Output', color: colors.output },
+].forEach(item => {
+  const el = document.createElement('div');
+  el.className = 'legend-item';
+  el.innerHTML = `<div class="swatch" style="background:${item.color}"></div>${item.label}`;
+  legendDiv.appendChild(el);
+});
+
+// Build stacked data
+const chartData = snapshots.map((s, i) => {
+  const d = { index: i, call_id: s.call_id, context_reset: s.context_reset,
+    system: s.system_tokens, history: s.history_tokens, output: s.output_tokens, _snap: s };
+  const tt = {};
+  toolNames.forEach(n => tt[n] = 0);
+  s.tool_injections.forEach(t => { tt[t.tool_name] = (tt[t.tool_name] || 0) + t.estimated_tokens; });
+  toolNames.forEach(n => { d['tool_' + n] = tt[n]; });
+  return d;
+});
+
+const stackKeys = ['system', 'history', ...toolNames.map(n => 'tool_' + n), 'output'];
+function stackColor(key) {
+  if (key === 'system') return colors.system;
+  if (key === 'history') return colors.history;
+  if (key === 'output') return colors.output;
+  if (key.startsWith('tool_')) return toolColor(key.slice(5));
+  return '#484f58';
 }
 
-// --- Tables ---
-function populateTable(id, data, labelKey) {
+const margin = { top: 16, right: 24, bottom: 36, left: 60 };
+const svgW = Math.min(window.innerWidth - 64, 1400);
+const width = svgW - margin.left - margin.right;
+const height = 260 - margin.top - margin.bottom;
+
+const svg = d3.select('#timeline').append('svg')
+  .attr('width', svgW).attr('height', 260 + 16)
+  .append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+const x = d3.scaleBand().domain(chartData.map(d => d.index)).range([0, width])
+  .padding(Math.min(0.2, 8 / chartData.length));
+const stack = d3.stack().keys(stackKeys);
+const series = stack(chartData);
+const yMax = d3.max(series, s => d3.max(s, d => d[1])) || 1;
+const y = d3.scaleLinear().domain([0, Math.max(yMax, metrics.context_limit)]).range([height, 0]);
+
+svg.selectAll('.layer').data(series).join('g').attr('class', 'layer')
+  .attr('fill', d => stackColor(d.key))
+  .each(function(sd) {
+    d3.select(this).selectAll('rect').data(sd).join('rect')
+      .attr('x', d => x(d.data.index)).attr('y', d => y(d[1]))
+      .attr('height', d => Math.max(0, y(d[0]) - y(d[1])))
+      .attr('width', x.bandwidth())
+      .on('mouseover', function(event, d) {
+        const s = d.data._snap;
+        let html = `<span class="tt-value">Call #${d.data.index + 1}</span> <span class="tt-label">${s.call_id}</span><br>`;
+        html += `<span class="tt-label">Input</span> <span class="tt-value">${fmtK(s.input_tokens)}</span> `;
+        html += `<span class="tt-label">Output</span> <span class="tt-value">${fmtK(s.output_tokens)}</span><br>`;
+        if (s.total_tool_tokens > 0) html += `<span class="tt-label">Tool tokens</span> <span class="tt-value">${fmtK(s.total_tool_tokens)}</span><br>`;
+        if (s.context_reset) html += `<span class="tt-dup">Context reset</span>`;
+        tooltip.innerHTML = html;
+        tooltip.style.display = 'block';
+        moveTooltip(event);
+      })
+      .on('mousemove', moveTooltip)
+      .on('mouseout', () => { tooltip.style.display = 'none'; });
+  });
+
+// Context limit line
+svg.append('line').attr('x1', 0).attr('x2', width)
+  .attr('y1', y(metrics.context_limit)).attr('y2', y(metrics.context_limit))
+  .attr('stroke', '#f85149').attr('stroke-dasharray', '6,4').attr('stroke-width', 1).attr('opacity', 0.6);
+svg.append('text').attr('x', width - 4).attr('y', y(metrics.context_limit) - 4)
+  .attr('text-anchor', 'end').attr('fill', '#f85149').attr('font-size', '10px')
+  .text(`${fmtK(metrics.context_limit)} limit`);
+
+// Reset markers
+chartData.forEach(d => {
+  if (d.context_reset) {
+    const cx = x(d.index) + x.bandwidth() / 2;
+    svg.append('polygon').attr('fill', '#f85149')
+      .attr('points', `${cx},${height + 4} ${cx - 4},${height + 12} ${cx + 4},${height + 12}`);
+  }
+});
+
+// Axes
+const xTick = Math.max(1, Math.floor(chartData.length / 20));
+svg.append('g').attr('transform', `translate(0,${height})`)
+  .call(d3.axisBottom(x).tickValues(chartData.filter((_, i) => i % xTick === 0).map(d => d.index)).tickFormat(d => `#${d + 1}`))
+  .selectAll('text').attr('fill', '#8b949e').attr('font-size', '10px');
+svg.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d => fmtK(d)))
+  .selectAll('text').attr('fill', '#8b949e').attr('font-size', '10px');
+svg.selectAll('.domain, .tick line').attr('stroke', '#21262d');
+
+// ─── Tables ─────────────────────────────────────────────────────────────────
+function populateTable(id, data) {
   const tbody = document.querySelector(`#${id} tbody`);
   const maxVal = data.length > 0 ? data[0][1] : 1;
   data.forEach(([name, tokens]) => {
     const tr = document.createElement('tr');
     const pct = (tokens / maxVal) * 100;
-    const color = id === 'tools-table' ? toolColorScale(name) : '#388bfd';
-    tr.innerHTML = `
-      <td>${name}</td>
-      <td class="num">${fmtK(tokens)}</td>
-      <td><div class="bar-bg"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div></td>
-    `;
+    const color = id === 'tools-table' ? toolColor(name) : '#388bfd';
+    tr.innerHTML = `<td>${name}</td><td class="num">${fmtK(tokens)}</td>
+      <td><div class="bar-bg"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div></td>`;
     tbody.appendChild(tr);
   });
 }
-
-populateTable('tools-table', metrics.top_tools, 0);
-populateTable('files-table', metrics.top_files, 0);
+populateTable('tools-table', metrics.top_tools);
+populateTable('files-table', metrics.top_files);
 </script>
 </body>
 </html>
