@@ -58,8 +58,8 @@ def _run_profiled(command: list[str], port: int, log_path: str | None, output_pa
     if port == 0:
         port = _find_free_port()
 
-    # Store logs and reports in ~/.contextflame/
-    cf_dir = Path.home() / ".contextflame"
+    # Store logs and reports in ./cfgs/
+    cf_dir = Path.cwd() / "cfgs"
     cf_dir.mkdir(exist_ok=True)
 
     session_id = str(int(time.time()))
