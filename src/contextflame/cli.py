@@ -58,9 +58,13 @@ def _run_profiled(command: list[str], port: int, log_path: str | None, output_pa
     if port == 0:
         port = _find_free_port()
 
+    session_id = str(int(time.time()))
     if log_path is None:
-        log_path = f"contextflame-{int(time.time())}.jsonl"
+        log_path = f"contextflame-{session_id}.jsonl"
     log = Path(log_path)
+
+    if output_path == "contextflame-report.html":
+        output_path = f"contextflame-{session_id}.html"
 
     app = create_app(log_path=log)
 
