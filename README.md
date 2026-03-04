@@ -21,16 +21,13 @@ No config. No background processes. When Claude exits, the proxy dies and you ge
 ## Quick Start
 
 ```bash
-git clone https://github.com/jcgs2503/contextflame.git
-cd contextflame
+pip install contextflame
 ```
-
-Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
 
 ### Profile a session
 
 ```bash
-uv run contextflame claude
+contextflame claude
 ```
 
 That's it. Use Claude Code as normal. When you exit, ContextFlame generates `contextflame-report.html` and prints a summary:
@@ -50,10 +47,10 @@ Open `contextflame-report.html` in a browser.
 ### Options
 
 ```bash
-uv run contextflame --port 8011 claude          # use a specific port
-uv run contextflame claude --model opus          # pass args through to claude
-uv run contextflame claude --resume              # works with any claude flags
-uv run contextflame --no-report claude           # skip report generation
+contextflame --port 8011 claude          # use a specific port
+contextflame claude --model opus          # pass args through to claude
+contextflame claude --resume              # works with any claude flags
+contextflame --no-report claude           # skip report generation
 ```
 
 Everything after `contextflame [options]` is passed directly to the wrapped command.
