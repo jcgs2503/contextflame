@@ -10,6 +10,16 @@ from typing import Iterator
 
 
 @dataclass
+class ContentPreviews:
+    """Truncated previews of each content category for click-to-inspect."""
+    system_preview: str | None = None
+    user_text_preview: str | None = None
+    assistant_text_preview: str | None = None
+    tool_calls_preview: str | None = None
+    thinking_preview: str | None = None
+
+
+@dataclass
 class ToolInjection:
     tool_name: str
     tool_use_id: str
@@ -17,6 +27,46 @@ class ToolInjection:
     byte_size: int
     file_path: str | None = None
     is_duplicate: bool = False
+    content_preview: str | None = None
+    is_carried_over: bool = False
+
+
+@dataclass
+class ToolSchemaTokens:
+    """Token count for a single tool schema in the tools[] array."""
+    tool_name: str
+    tokens: int
+
+
+@dataclass
+class TokenBreakdown:
+    """Granular per-component token counts using tiktoken."""
+    # System prompt components
+    system_tokens: int = 0
+
+    # Tool schemas (the tools[] array sent every request)
+    tools_tokens: int = 0
+    tool_schemas: list[ToolSchemaTokens] = field(default_factory=list)
+
+    # Messages breakdown
+    user_text_tokens: int = 0      # plain user text messages
+    assistant_text_tokens: int = 0  # assistant text responses
+    tool_result_tokens: int = 0    # tool_result content in user messages
+    tool_use_tokens: int = 0       # tool_use blocks in assistant messages
+    thinking_tokens: int = 0       # thinking blocks
+
+    # Grand total from tiktoken
+    estimated_total: int = 0
+
+    # API ground truth
+    api_total: int = 0  # input_tokens + cache_read + cache_creation
+
+    @property
+    def estimation_error(self) -> float:
+        """How far off tiktoken is from API total. Negative = underestimate."""
+        if self.api_total == 0:
+            return 0.0
+        return (self.estimated_total - self.api_total) / self.api_total
 
 
 @dataclass
@@ -32,7 +82,10 @@ class ContextSnapshot:
     history_tokens: int
     tool_injections: list[ToolInjection]
     total_tool_tokens: int
+    carried_over_tool_tokens: int = 0
     context_reset: bool = False
+    token_breakdown: TokenBreakdown | None = None
+    content_previews: ContentPreviews | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -43,7 +96,17 @@ class ContextSnapshot:
     def from_dict(cls, d: dict) -> ContextSnapshot:
         d["timestamp"] = datetime.fromisoformat(d["timestamp"])
         d["tool_injections"] = [ToolInjection(**ti) for ti in d["tool_injections"]]
-        return cls(**d)
+        tb = d.pop("token_breakdown", None)
+        if tb is not None:
+            schemas = [ToolSchemaTokens(**s) for s in tb.pop("tool_schemas", [])]
+            tb = TokenBreakdown(**tb, tool_schemas=schemas)
+        cp = d.pop("content_previews", None)
+        if cp is not None:
+            cp = ContentPreviews(**cp)
+        snap = cls(**d)
+        snap.token_breakdown = tb
+        snap.content_previews = cp
+        return snap
 
 
 def append_snapshot(path: Path, snapshot: ContextSnapshot) -> None:

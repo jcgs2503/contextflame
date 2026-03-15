@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -36,7 +35,7 @@ class ContextFlameCLI(click.Group):
                     opt_args.append(rest.pop(0))  # option value
             elif rest[0] in self._flag_opts:
                 opt_args.append(rest.pop(0))
-            elif rest[0] in ("--help", "-h"):
+            elif rest[0] in ("--help", "-h", "--version"):
                 opt_args.append(rest.pop(0))
                 break
             else:
@@ -56,6 +55,7 @@ class ContextFlameCLI(click.Group):
 
 
 @click.group(cls=ContextFlameCLI, invoke_without_command=True)
+@click.version_option(package_name="contextflame")
 @click.option("--port", default=0, help="Proxy port (0 = auto-pick).")
 @click.option("--log", "log_path", default=None, help="Path to JSONL log file.")
 @click.option("--output", "output_path", default="contextflame-report.html", help="Report output path.")
@@ -164,7 +164,8 @@ def _run_profiled(command: list[str], port: int, log_path: str | None, output_pa
             click.echo(f"  {metrics.total_calls} calls | "
                         f"{metrics.total_input_tokens:,} input tokens | "
                         f"{metrics.tool_token_ratio:.0%} tool | "
-                        f"{metrics.duplicate_ratio:.0%} duplicate")
+                        f"{metrics.duplicate_ratio:.0%} duplicate | "
+                        f"tiktoken error: {metrics.mean_estimation_error:+.1%}")
     elif not no_report:
         click.echo("No API calls recorded.")
 
@@ -291,6 +292,7 @@ def report(log_path: str, output_path: str):
     click.echo(f"  {metrics.total_duplicate_tokens:,} duplicate tokens ({metrics.duplicate_ratio:.1%} of tool)")
     click.echo(f"  {metrics.resets} context resets")
     click.echo(f"  Peak utilization: {metrics.peak_utilization:.1%}")
+    click.echo(f"  tiktoken estimation error: {metrics.mean_estimation_error:+.1%} avg, {metrics.max_estimation_error:+.1%} max")
 
 
 @main.command()
