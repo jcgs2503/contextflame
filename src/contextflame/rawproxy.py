@@ -26,6 +26,13 @@ def create_raw_app(log_path: Path) -> Starlette:
 
     call_counter = {"n": 0}
 
+    # Shared HTTP client — reuses TCP/TLS connections across requests
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(300.0),
+        http2=True,
+        limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+    )
+
     async def proxy_messages(request: Request) -> Response:
         call_counter["n"] += 1
         call_num = call_counter["n"]
@@ -67,27 +74,26 @@ def create_raw_app(log_path: Path) -> Starlette:
                 request_body, call_num, call_id, timestamp, log_path,
             )
         else:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-                resp = await client.post(
-                    target_url, content=body_bytes, headers=forward_headers,
-                )
-                response_body = resp.json()
+            resp = await http_client.post(
+                target_url, content=body_bytes, headers=forward_headers,
+            )
+            response_body = resp.json()
 
-                _append_log(log_path, {
-                    "type": "response",
-                    "call_num": call_num,
-                    "call_id": call_id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "status": resp.status_code,
-                    "body": response_body,
-                })
+            _append_log(log_path, {
+                "type": "response",
+                "call_num": call_num,
+                "call_id": call_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": resp.status_code,
+                "body": response_body,
+            })
 
-                return Response(
-                    content=resp.content,
-                    status_code=resp.status_code,
-                    headers=dict(resp.headers),
-                    media_type=resp.headers.get("content-type"),
-                )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+                media_type=resp.headers.get("content-type"),
+            )
 
     async def _handle_streaming(
         target_url, forward_headers, body_bytes,
@@ -97,23 +103,22 @@ def create_raw_app(log_path: Path) -> Starlette:
         async def stream_generator():
             sse_events = []
 
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-                async with client.stream(
-                    "POST", target_url,
-                    content=body_bytes, headers=forward_headers,
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        yield line + "\n"
+            async with http_client.stream(
+                "POST", target_url,
+                content=body_bytes, headers=forward_headers,
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    yield line + "\n"
 
-                        # Capture SSE data events
-                        if line.startswith("data: "):
-                            data_str = line[6:]
-                            if data_str.strip() == "[DONE]":
-                                continue
-                            try:
-                                sse_events.append(json.loads(data_str))
-                            except json.JSONDecodeError:
-                                pass
+                    # Capture SSE data events
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            continue
+                        try:
+                            sse_events.append(json.loads(data_str))
+                        except json.JSONDecodeError:
+                            pass
 
             # Reconstruct the full response from SSE events
             usage = {}
@@ -185,15 +190,14 @@ def create_raw_app(log_path: Path) -> Starlette:
 
         target_url = f"{ANTHROPIC_API_BASE}{request.url.path}"
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-            resp = await client.request(
-                method=request.method, url=target_url,
-                content=body_bytes, headers=forward_headers,
-            )
-            return Response(
-                content=resp.content, status_code=resp.status_code,
-                headers=dict(resp.headers),
-            )
+        resp = await http_client.request(
+            method=request.method, url=target_url,
+            content=body_bytes, headers=forward_headers,
+        )
+        return Response(
+            content=resp.content, status_code=resp.status_code,
+            headers=dict(resp.headers),
+        )
 
     routes = [
         Route("/v1/messages", proxy_messages, methods=["POST"]),

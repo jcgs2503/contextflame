@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ContextFlame Report</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>">
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -54,6 +55,8 @@
     color: rgba(240,246,252,0.7); flex-shrink: 0;
   }
 
+  .flame-cell.carried-over { opacity: 0.55; }
+
   .flame-cell.dup { background-image: repeating-linear-gradient(
     -45deg, transparent, transparent 3px, rgba(248,81,73,0.15) 3px, rgba(248,81,73,0.15) 6px
   ); }
@@ -89,6 +92,38 @@
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .bar-bg { background: #161b22; border-radius: 2px; height: 6px; width: 100%; }
   .bar-fill { height: 6px; border-radius: 2px; }
+
+  /* --- Content inspect panel --- */
+  .content-panel {
+    position: fixed; top: 0; right: 0; width: 420px; height: 100vh;
+    background: #161b22; border-left: 1px solid #30363d;
+    z-index: 200; display: flex; flex-direction: column;
+    transform: translateX(100%); transition: transform 0.2s ease;
+    box-shadow: -4px 0 24px rgba(0,0,0,0.5);
+  }
+  .content-panel.open { transform: translateX(0); }
+  .content-panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid #21262d;
+  }
+  .content-panel-header h3 { font-size: 14px; color: #f0f6fc; margin: 0; }
+  .content-panel-header .panel-tokens { font-size: 12px; color: #8b949e; }
+  .content-panel-close {
+    background: none; border: 1px solid #30363d; border-radius: 4px;
+    color: #8b949e; cursor: pointer; padding: 4px 10px; font-size: 12px;
+  }
+  .content-panel-close:hover { color: #f0f6fc; border-color: #484f58; }
+  .content-panel-body {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+  }
+  .content-panel-body pre {
+    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace;
+    font-size: 12px; line-height: 1.5; color: #c9d1d9;
+    white-space: pre-wrap; word-break: break-word; margin: 0;
+  }
+  .content-panel-body .no-preview { color: #484f58; font-style: italic; }
+  .flame-cell.inspectable { cursor: pointer; }
+  .flame-cell.inspectable:hover { outline: 1px solid rgba(56,139,253,0.5); outline-offset: -1px; }
 </style>
 </head>
 <body>
@@ -101,7 +136,7 @@
 <div class="metrics-bar" id="metrics-bar"></div>
 
 <div class="section">
-  <div class="section-title">Flamegraph &mdash; click to zoom, width = tokens</div>
+  <div class="section-title">Flamegraph &mdash; click to zoom, click leaves to inspect content, width = tokens</div>
   <div class="flame-container">
     <div class="breadcrumb" id="breadcrumb"></div>
     <div id="flamegraph"></div>
@@ -131,6 +166,19 @@
   </div>
 </div>
 
+<div class="content-panel" id="content-panel">
+  <div class="content-panel-header">
+    <div>
+      <h3 id="panel-title"></h3>
+      <span class="panel-tokens" id="panel-tokens"></span>
+    </div>
+    <button class="content-panel-close" id="panel-close">Close &times;</button>
+  </div>
+  <div class="content-panel-body">
+    <pre id="panel-content"></pre>
+  </div>
+</div>
+
 <div class="tooltip" id="tooltip" style="display:none;"></div>
 
 <script>
@@ -157,12 +205,30 @@ addMetric('Duplicate Ratio', fmtPct(metrics.duplicate_ratio), metrics.duplicate_
 addMetric('Peak Util', fmtPct(metrics.peak_utilization), metrics.peak_utilization > 0.9 ? 'danger' : metrics.peak_utilization > 0.7 ? 'warn' : '');
 addMetric('Resets', metrics.resets, metrics.resets > 0 ? 'warn' : '');
 addMetric('Wasted', fmtK(metrics.wasted_tokens), metrics.wasted_tokens > 10000 ? 'danger' : '');
+if (metrics.total_carried_over_tokens > 0) {
+  addMetric('Carry Cost', fmtK(metrics.total_carried_over_tokens) + ' (' + fmtPct(metrics.carried_over_ratio) + ')', metrics.carried_over_ratio > 0.3 ? 'danger' : metrics.carried_over_ratio > 0.15 ? 'warn' : '');
+}
+if (metrics.total_tools_schema_tokens > 0) {
+  addMetric('Tool Schemas', fmtK(metrics.total_tools_schema_tokens));
+}
+if (metrics.total_estimated_tokens > 0) {
+  const errPct = (metrics.mean_estimation_error * 100).toFixed(1);
+  const errStr = (metrics.mean_estimation_error >= 0 ? '+' : '') + errPct + '%';
+  addMetric('tiktoken Error', errStr, Math.abs(metrics.mean_estimation_error) > 0.1 ? 'warn' : '');
+}
 
 // ─── Color scheme ───────────────────────────────────────────────────────────
 const colors = {
   system: '#484f58',
-  history: '#388bfd',
+  tool_schemas: '#6e40aa',
+  user_text: '#388bfd',
+  assistant_text: '#1f6feb',
+  tool_results: '#5a3e1e',
+  tool_calls: '#8957e5',
+  thinking: '#a371f7',
   output: '#3fb950',
+  // Legacy
+  history: '#388bfd',
 };
 const toolPalette = ['#f0883e','#da3633','#d29922','#e3b341','#f78166','#ff7b72','#ffa657','#d2a8ff','#79c0ff','#56d364'];
 const toolColorMap = {};
@@ -175,109 +241,192 @@ function nodeColor(node) {
   if (node.type === 'root') return '#21262d';
   if (node.type === 'call') return '#30363d';
   if (node.type === 'system') return colors.system;
-  if (node.type === 'history') return colors.history;
+  if (node.type === 'tool_schemas') return colors.tool_schemas;
+  if (node.type === 'tool_schema') return colors.tool_schemas;
+  if (node.type === 'messages') return '#30363d';
+  if (node.type === 'user_text') return colors.user_text;
+  if (node.type === 'assistant_text') return colors.assistant_text;
+  if (node.type === 'tool_results') return colors.tool_results;
+  if (node.type === 'tool_calls') return colors.tool_calls;
+  if (node.type === 'thinking') return colors.thinking;
   if (node.type === 'output') return colors.output;
+  // Legacy
+  if (node.type === 'history') return colors.history;
   if (node.type === 'tools') return '#5a3e1e';
   if (node.type === 'tool') return toolColor(node.toolName);
   return '#484f58';
 }
 
 // ─── Build flamegraph tree ──────────────────────────────────────────────────
-// Hierarchy:
+// New hierarchy (when token_breakdown available):
 //   root (session)
-//     call #1
+//     call #1  [badge: tiktoken error]
 //       system prompt
-//       history
-//       tools (aggregate)
-//         Read /src/main.py
-//         Grep "pattern"
-//         ...
+//       tool schemas
+//         Read (per-schema)
+//         Bash (per-schema)
+//       messages
+//         user text
+//         assistant text
+//         tool results
+//           Read /src/main.py  (tool_injections)
+//           Grep "pattern"
+//         tool calls
+//         thinking
 //       output
-//     call #2
-//       ...
+//     call #2 ...
+// Falls back to old flat structure when token_breakdown is null.
+
+function mkNode(name, type, tokens, meta) {
+  return { name, type, tokens, children: [], meta: meta || {} };
+}
 
 function buildTree() {
-  const root = {
-    name: 'Session',
-    type: 'root',
-    tokens: 0,
-    children: [],
-    meta: {},
-  };
+  const root = mkNode('Session', 'root', 0);
 
   snapshots.forEach((snap, i) => {
     const callTokens = snap.input_tokens + snap.output_tokens;
-    const callNode = {
-      name: `Call #${i + 1}`,
-      type: 'call',
-      tokens: callTokens,
-      children: [],
-      meta: { call_id: snap.call_id, context_reset: snap.context_reset, snap },
-    };
+    const callNode = mkNode(`Call #${i + 1}`, 'call', callTokens,
+      { call_id: snap.call_id, context_reset: snap.context_reset, snap });
 
-    // System prompt
-    if (snap.system_tokens > 0) {
-      callNode.children.push({
-        name: 'System Prompt',
-        type: 'system',
-        tokens: snap.system_tokens,
-        children: [],
-        meta: {},
-      });
-    }
+    const tb = snap.token_breakdown;
 
-    // History
-    if (snap.history_tokens > 0) {
-      callNode.children.push({
-        name: 'Conversation History',
-        type: 'history',
-        tokens: snap.history_tokens,
-        children: [],
-        meta: {},
-      });
-    }
+    if (tb) {
+      // ── New breakdown-based tree ──
+      // The API-reported input_tokens is ground truth. Our tiktoken estimates
+      // may not sum to it exactly. We distribute any residual so children
+      // always visually fill the parent bar (no cross-sections / gaps).
+      const inputBudget = snap.input_tokens;
 
-    // Tools
-    if (snap.tool_injections.length > 0) {
-      const toolsNode = {
-        name: 'Tool Injections',
-        type: 'tools',
-        tokens: snap.total_tool_tokens,
-        children: [],
-        meta: {},
-      };
+      // Gather raw tiktoken component values
+      const rawSystem = tb.system_tokens || 0;
+      const rawToolSchemas = tb.tools_tokens || 0;
+      const rawUserText = tb.user_text_tokens || 0;
+      const rawAssistant = tb.assistant_text_tokens || 0;
+      const rawToolResult = tb.tool_result_tokens || 0;
+      const rawToolUse = tb.tool_use_tokens || 0;
+      const rawThinking = tb.thinking_tokens || 0;
+      const rawSum = rawSystem + rawToolSchemas + rawUserText + rawAssistant
+                   + rawToolResult + rawToolUse + rawThinking;
 
-      snap.tool_injections.forEach(inj => {
-        const label = inj.file_path
-          ? `${inj.tool_name} ${inj.file_path}`
-          : inj.tool_name;
-        toolsNode.children.push({
-          name: label,
-          type: 'tool',
-          toolName: inj.tool_name,
-          tokens: inj.estimated_tokens,
-          children: [],
-          meta: {
-            tool_use_id: inj.tool_use_id,
-            file_path: inj.file_path,
-            byte_size: inj.byte_size,
-            is_duplicate: inj.is_duplicate,
-          },
+      // Scale factor to normalize tiktoken estimates to API total
+      const scale = rawSum > 0 ? inputBudget / rawSum : 1;
+
+      const sysTokens = Math.round(rawSystem * scale);
+      const schemaTokens = Math.round(rawToolSchemas * scale);
+      const userTokens = Math.round(rawUserText * scale);
+      const asstTokens = Math.round(rawAssistant * scale);
+      const resultTokens = Math.round(rawToolResult * scale);
+      const useTokens = Math.round(rawToolUse * scale);
+      const thinkTokens = Math.round(rawThinking * scale);
+
+      // Content previews for this snapshot
+      const cp = snap.content_previews || {};
+
+      // System prompt
+      if (sysTokens > 0) {
+        callNode.children.push(mkNode('System Prompt', 'system', sysTokens, { content: cp.system_preview }));
+      }
+
+      // Tool schemas
+      if (schemaTokens > 0) {
+        const schemasNode = mkNode('Tool Schemas', 'tool_schemas', schemaTokens);
+        if (tb.tool_schemas && tb.tool_schemas.length > 0) {
+          const rawSchemaSum = tb.tool_schemas.reduce((s, ts) => s + ts.tokens, 0);
+          const schemaScale = rawSchemaSum > 0 ? schemaTokens / rawSchemaSum : 1;
+          tb.tool_schemas.forEach(ts => {
+            schemasNode.children.push(
+              mkNode(ts.tool_name, 'tool_schema', Math.round(ts.tokens * schemaScale))
+            );
+          });
+        }
+        callNode.children.push(schemasNode);
+      }
+
+      // Messages container
+      const msgTokens = userTokens + asstTokens + resultTokens + useTokens + thinkTokens;
+      if (msgTokens > 0) {
+        const msgsNode = mkNode('Messages', 'messages', msgTokens);
+
+        if (userTokens > 0) {
+          msgsNode.children.push(mkNode('User Text', 'user_text', userTokens, { content: cp.user_text_preview }));
+        }
+        if (asstTokens > 0) {
+          msgsNode.children.push(mkNode('Assistant Text', 'assistant_text', asstTokens, { content: cp.assistant_text_preview }));
+        }
+
+        // Tool Results — nest tool_injections under it
+        if (resultTokens > 0) {
+          const resultsNode = mkNode('Tool Results', 'tool_results', resultTokens);
+
+          if (snap.tool_injections.length > 0) {
+            // Scale tool injection estimates to fit within resultTokens
+            const rawInjSum = snap.tool_injections.reduce((s, inj) => s + inj.estimated_tokens, 0);
+            const injScale = rawInjSum > 0 ? resultTokens / rawInjSum : 1;
+
+            snap.tool_injections.forEach(inj => {
+              const baseLbl = inj.file_path
+                ? `${inj.tool_name} ${inj.file_path}`
+                : inj.tool_name;
+              const label = inj.is_carried_over ? baseLbl + ' (carried)' : baseLbl;
+              resultsNode.children.push(mkNode(label, 'tool', Math.round(inj.estimated_tokens * injScale), {
+                toolName: inj.tool_name,
+                tool_use_id: inj.tool_use_id,
+                file_path: inj.file_path,
+                byte_size: inj.byte_size,
+                is_duplicate: inj.is_duplicate,
+                is_carried_over: inj.is_carried_over,
+                content: inj.content_preview,
+              }));
+            });
+            // Set toolName for color on leaf nodes
+            resultsNode.children.forEach(c => { c.toolName = c.meta.toolName; });
+          }
+
+          msgsNode.children.push(resultsNode);
+        }
+
+        if (useTokens > 0) {
+          msgsNode.children.push(mkNode('Tool Calls', 'tool_calls', useTokens, { content: cp.tool_calls_preview }));
+        }
+        if (thinkTokens > 0) {
+          msgsNode.children.push(mkNode('Thinking', 'thinking', thinkTokens, { content: cp.thinking_preview }));
+        }
+
+        callNode.children.push(msgsNode);
+      }
+
+    } else {
+      // ── Legacy fallback (no token_breakdown) ──
+      if (snap.system_tokens > 0) {
+        callNode.children.push(mkNode('System Prompt', 'system', snap.system_tokens));
+      }
+      if (snap.history_tokens > 0) {
+        callNode.children.push(mkNode('Conversation History', 'history', snap.history_tokens));
+      }
+      if (snap.tool_injections.length > 0) {
+        const toolsNode = mkNode('Tool Injections', 'tools', snap.total_tool_tokens);
+        snap.tool_injections.forEach(inj => {
+          const label = inj.file_path
+            ? `${inj.tool_name} ${inj.file_path}`
+            : inj.tool_name;
+          toolsNode.children.push({
+            ...mkNode(label, 'tool', inj.estimated_tokens, {
+              tool_use_id: inj.tool_use_id,
+              file_path: inj.file_path,
+              byte_size: inj.byte_size,
+              is_duplicate: inj.is_duplicate,
+            }),
+            toolName: inj.tool_name,
+          });
         });
-      });
-
-      callNode.children.push(toolsNode);
+        callNode.children.push(toolsNode);
+      }
     }
 
     // Output
     if (snap.output_tokens > 0) {
-      callNode.children.push({
-        name: 'Output',
-        type: 'output',
-        tokens: snap.output_tokens,
-        children: [],
-        meta: {},
-      });
+      callNode.children.push(mkNode('Output', 'output', snap.output_tokens));
     }
 
     root.children.push(callNode);
@@ -329,7 +478,7 @@ function renderFlame(node) {
     rowNodes.forEach(n => {
       const pct = (n.tokens / totalTokens) * 100;
       const cell = document.createElement('div');
-      cell.className = 'flame-cell' + (pct < 2 ? ' too-small' : '') + (n.meta.is_duplicate ? ' dup' : '');
+      cell.className = 'flame-cell' + (pct < 2 ? ' too-small' : '') + (n.meta.is_duplicate ? ' dup' : '') + (n.meta.is_carried_over ? ' carried-over' : '');
       cell.style.width = pct + '%';
       cell.style.backgroundColor = nodeColor(n);
 
@@ -347,8 +496,17 @@ function renderFlame(node) {
         }
       }
 
-      // Click to zoom
-      if (n.children && n.children.length > 0) {
+      // Determine if this node is inspectable (leaf with content)
+      const hasContent = n.meta && n.meta.content;
+      const hasChildren = n.children && n.children.length > 0;
+
+      if (hasContent && !hasChildren) {
+        cell.classList.add('inspectable');
+        cell.addEventListener('click', (e) => {
+          e.stopPropagation();
+          showContentPanel(n);
+        });
+      } else if (hasChildren) {
         cell.addEventListener('click', (e) => {
           e.stopPropagation();
           zoomStack.push(currentZoom);
@@ -413,11 +571,25 @@ function showFlameTooltip(event, node) {
     if (s.cache_read_tokens > 0) {
       html += `<span class="tt-label">Cache read</span> <span class="tt-value">${fmtK(s.cache_read_tokens)}</span><br>`;
     }
+    if (s.token_breakdown) {
+      const tb = s.token_breakdown;
+      const err = tb.api_total > 0 ? ((tb.estimated_total - tb.api_total) / tb.api_total * 100).toFixed(1) : '0.0';
+      const sign = err >= 0 ? '+' : '';
+      const cls = Math.abs(parseFloat(err)) > 10 ? 'tt-dup' : 'tt-label';
+      html += `<span class="${cls}">tiktoken ${sign}${err}%</span> `;
+      html += `<span class="tt-label">(${fmtK(tb.estimated_total)} est / ${fmtK(tb.api_total)} api)</span><br>`;
+    }
     if (s.context_reset) {
       html += `<span class="tt-dup">Context reset detected</span><br>`;
     }
     if (s.tool_injections.length > 0) {
-      html += `<span class="tt-label">${s.tool_injections.length} tool injection(s)</span><br>`;
+      const newInj = s.tool_injections.filter(t => !t.is_carried_over).length;
+      const carriedInj = s.tool_injections.filter(t => t.is_carried_over).length;
+      if (carriedInj > 0) {
+        html += `<span class="tt-label">${newInj} new + ${carriedInj} carried-over injection(s)</span><br>`;
+      } else {
+        html += `<span class="tt-label">${s.tool_injections.length} tool injection(s)</span><br>`;
+      }
     }
   }
 
@@ -428,12 +600,19 @@ function showFlameTooltip(event, node) {
     if (node.meta.byte_size) {
       html += `<span class="tt-label">Size</span> <span class="tt-value">${fmtK(node.meta.byte_size)} bytes</span><br>`;
     }
+    if (node.meta.is_carried_over) {
+      html += `<span style="color:#d29922;font-weight:500">Carried over from previous call</span><br>`;
+    }
     if (node.meta.is_duplicate) {
       html += `<span class="tt-dup">Duplicate — content already seen in earlier call</span><br>`;
     }
   }
 
-  if (node.children && node.children.length > 0) {
+  const nodeHasContent = node.meta && node.meta.content;
+  const nodeHasChildren = node.children && node.children.length > 0;
+  if (nodeHasContent && !nodeHasChildren) {
+    html += `<span class="tt-label" style="font-size:11px;opacity:0.7">Click to inspect content</span>`;
+  } else if (nodeHasChildren) {
     html += `<span class="tt-label" style="font-size:11px;opacity:0.7">Click to zoom in</span>`;
   }
 
@@ -453,11 +632,44 @@ function moveTooltip(event) {
   tooltip.style.top = top + 'px';
 }
 
+// ─── Content inspect panel ──────────────────────────────────────────────────
+const contentPanel = document.getElementById('content-panel');
+const panelTitle = document.getElementById('panel-title');
+const panelTokens = document.getElementById('panel-tokens');
+const panelContent = document.getElementById('panel-content');
+const panelClose = document.getElementById('panel-close');
+
+function showContentPanel(node) {
+  panelTitle.textContent = node.name;
+  panelTokens.textContent = fmtK(node.tokens) + ' tokens';
+  const text = (node.meta && node.meta.content) || null;
+  if (text) {
+    panelContent.className = '';
+    panelContent.textContent = text;
+  } else {
+    panelContent.className = 'no-preview';
+    panelContent.textContent = '(no preview available)';
+  }
+  contentPanel.classList.add('open');
+}
+
+function hideContentPanel() {
+  contentPanel.classList.remove('open');
+}
+
+panelClose.addEventListener('click', hideContentPanel);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideContentPanel();
+});
+
 // Initial render
 renderFlame(tree);
 
 // ─── Timeline (stacked bar chart) ──────────────────────────────────────────
 const timelineDiv = document.getElementById('timeline');
+
+// Check if any snapshot has token_breakdown
+const hasBreakdown = snapshots.some(s => s.token_breakdown != null);
 
 const allToolNames = new Set();
 snapshots.forEach(s => s.tool_injections.forEach(t => allToolNames.add(t.tool_name)));
@@ -468,37 +680,85 @@ toolNames.forEach(n => toolColor(n));
 
 // Legend
 const legendDiv = document.getElementById('legend');
-[
-  { label: 'System', color: colors.system },
-  { label: 'History', color: colors.history },
-  ...toolNames.map(n => ({ label: n, color: toolColor(n) })),
-  { label: 'Output', color: colors.output },
-].forEach(item => {
-  const el = document.createElement('div');
-  el.className = 'legend-item';
-  el.innerHTML = `<div class="swatch" style="background:${item.color}"></div>${item.label}`;
-  legendDiv.appendChild(el);
-});
+if (hasBreakdown) {
+  [
+    { label: 'System', color: colors.system },
+    { label: 'Tool Schemas', color: colors.tool_schemas },
+    { label: 'User Text', color: colors.user_text },
+    { label: 'Assistant Text', color: colors.assistant_text },
+    { label: 'Tool Results', color: colors.tool_results },
+    { label: 'Tool Calls', color: colors.tool_calls },
+    { label: 'Thinking', color: colors.thinking },
+    { label: 'Output', color: colors.output },
+  ].forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'legend-item';
+    el.innerHTML = `<div class="swatch" style="background:${item.color}"></div>${item.label}`;
+    legendDiv.appendChild(el);
+  });
+} else {
+  [
+    { label: 'System', color: colors.system },
+    { label: 'History', color: colors.history },
+    ...toolNames.map(n => ({ label: n, color: toolColor(n) })),
+    { label: 'Output', color: colors.output },
+  ].forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'legend-item';
+    el.innerHTML = `<div class="swatch" style="background:${item.color}"></div>${item.label}`;
+    legendDiv.appendChild(el);
+  });
+}
 
 // Build stacked data
+let stackKeys, stackColor;
+if (hasBreakdown) {
+  stackKeys = ['system', 'tool_schemas', 'user_text', 'assistant_text', 'tool_results', 'tool_calls', 'thinking', 'output'];
+  stackColor = function(key) { return colors[key] || '#484f58'; };
+} else {
+  stackKeys = ['system', 'history', ...toolNames.map(n => 'tool_' + n), 'output'];
+  stackColor = function(key) {
+    if (key === 'system') return colors.system;
+    if (key === 'history') return colors.history;
+    if (key === 'output') return colors.output;
+    if (key.startsWith('tool_')) return toolColor(key.slice(5));
+    return '#484f58';
+  };
+}
+
 const chartData = snapshots.map((s, i) => {
-  const d = { index: i, call_id: s.call_id, context_reset: s.context_reset,
-    system: s.system_tokens, history: s.history_tokens, output: s.output_tokens, _snap: s };
-  const tt = {};
-  toolNames.forEach(n => tt[n] = 0);
-  s.tool_injections.forEach(t => { tt[t.tool_name] = (tt[t.tool_name] || 0) + t.estimated_tokens; });
-  toolNames.forEach(n => { d['tool_' + n] = tt[n]; });
+  const d = { index: i, call_id: s.call_id, context_reset: s.context_reset, output: s.output_tokens, _snap: s };
+
+  if (hasBreakdown && s.token_breakdown) {
+    const tb = s.token_breakdown;
+    d.system = tb.system_tokens || 0;
+    d.tool_schemas = tb.tools_tokens || 0;
+    d.user_text = tb.user_text_tokens || 0;
+    d.assistant_text = tb.assistant_text_tokens || 0;
+    d.tool_results = tb.tool_result_tokens || 0;
+    d.tool_calls = tb.tool_use_tokens || 0;
+    d.thinking = tb.thinking_tokens || 0;
+  } else if (hasBreakdown) {
+    // Mixed: snapshot without breakdown in a breakdown session
+    d.system = s.system_tokens;
+    d.tool_schemas = 0;
+    d.user_text = s.history_tokens;
+    d.assistant_text = 0;
+    d.tool_results = s.total_tool_tokens;
+    d.tool_calls = 0;
+    d.thinking = 0;
+  } else {
+    // Legacy
+    d.system = s.system_tokens;
+    d.history = s.history_tokens;
+    const tt = {};
+    toolNames.forEach(n => tt[n] = 0);
+    s.tool_injections.forEach(t => { tt[t.tool_name] = (tt[t.tool_name] || 0) + t.estimated_tokens; });
+    toolNames.forEach(n => { d['tool_' + n] = tt[n]; });
+  }
+
   return d;
 });
-
-const stackKeys = ['system', 'history', ...toolNames.map(n => 'tool_' + n), 'output'];
-function stackColor(key) {
-  if (key === 'system') return colors.system;
-  if (key === 'history') return colors.history;
-  if (key === 'output') return colors.output;
-  if (key.startsWith('tool_')) return toolColor(key.slice(5));
-  return '#484f58';
-}
 
 const margin = { top: 16, right: 24, bottom: 36, left: 60 };
 const svgW = Math.min(window.innerWidth - 64, 1400);

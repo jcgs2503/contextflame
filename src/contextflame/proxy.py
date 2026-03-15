@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +27,13 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
     seen_tool_use_ids: set[str] = set()  # tool_use_ids already counted
     previous_input_tokens: int | None = None
 
+    # Shared HTTP client — reuses TCP/TLS connections across requests
+    http_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(300.0),
+        http2=True,
+        limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+    )
+
     async def proxy_messages(request: Request) -> Response:
         nonlocal previous_input_tokens
 
@@ -49,41 +55,38 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
         timestamp = datetime.now(timezone.utc)
 
         if is_streaming:
-            # Client must live as long as the streaming response, so don't
-            # use async-with here — the stream generator manages the lifecycle.
             return await _handle_streaming(
                 target_url, forward_headers, body_bytes,
                 request_body, call_id, timestamp,
                 log_path, content_hashes,
             )
         else:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-                resp = await client.post(
-                    target_url,
-                    content=body_bytes,
-                    headers=forward_headers,
-                )
+            resp = await http_client.post(
+                target_url,
+                content=body_bytes,
+                headers=forward_headers,
+            )
 
-                response_body = resp.json()
+            response_body = resp.json()
 
-                snapshot = attribute_call(
-                    call_id=call_id,
-                    timestamp=timestamp,
-                    request_body=request_body,
-                    response_body=response_body,
-                    content_hashes=content_hashes,
-                    seen_tool_use_ids=seen_tool_use_ids,
-                    previous_input_tokens=previous_input_tokens,
-                )
-                append_snapshot(log_path, snapshot)
-                previous_input_tokens = snapshot.input_tokens
+            snapshot = attribute_call(
+                call_id=call_id,
+                timestamp=timestamp,
+                request_body=request_body,
+                response_body=response_body,
+                content_hashes=content_hashes,
+                seen_tool_use_ids=seen_tool_use_ids,
+                previous_input_tokens=previous_input_tokens,
+            )
+            append_snapshot(log_path, snapshot)
+            previous_input_tokens = snapshot.input_tokens
 
-                return Response(
-                    content=resp.content,
-                    status_code=resp.status_code,
-                    headers=dict(resp.headers),
-                    media_type=resp.headers.get("content-type"),
-                )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+                media_type=resp.headers.get("content-type"),
+            )
 
     async def _handle_streaming(
         target_url: str,
@@ -101,50 +104,47 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
         async def stream_generator():
             nonlocal previous_input_tokens
 
-            # Client lives inside the generator so it stays open for the
-            # entire duration of the streamed response.
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-                async with client.stream(
-                    "POST",
-                    target_url,
-                    content=body_bytes,
-                    headers=forward_headers,
-                ) as resp:
-                    usage_data = {}
-                    model = request_body.get("model", "unknown")
+            async with http_client.stream(
+                "POST",
+                target_url,
+                content=body_bytes,
+                headers=forward_headers,
+            ) as resp:
+                usage_data = {}
+                model = request_body.get("model", "unknown")
 
-                    async for line in resp.aiter_lines():
-                        yield line + "\n"
+                async for line in resp.aiter_lines():
+                    yield line + "\n"
 
-                        if line.startswith("data: "):
-                            data_str = line[6:]
-                            if data_str.strip() == "[DONE]":
-                                continue
-                            try:
-                                event_data = json.loads(data_str)
-                                if event_data.get("type") == "message_start":
-                                    msg = event_data.get("message", {})
-                                    usage_data = msg.get("usage", {})
-                                    model = msg.get("model", model)
-                                elif event_data.get("type") == "message_delta":
-                                    delta_usage = event_data.get("usage", {})
-                                    usage_data.update(delta_usage)
-                            except (json.JSONDecodeError, KeyError):
-                                pass
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            continue
+                        try:
+                            event_data = json.loads(data_str)
+                            if event_data.get("type") == "message_start":
+                                msg = event_data.get("message", {})
+                                usage_data = msg.get("usage", {})
+                                model = msg.get("model", model)
+                            elif event_data.get("type") == "message_delta":
+                                delta_usage = event_data.get("usage", {})
+                                usage_data.update(delta_usage)
+                        except (json.JSONDecodeError, KeyError):
+                            pass
 
-                # Log after stream completes
-                response_body = {"model": model, "usage": usage_data}
-                snapshot = attribute_call(
-                    call_id=call_id,
-                    timestamp=timestamp,
-                    request_body=request_body,
-                    response_body=response_body,
-                    content_hashes=content_hashes,
-                    seen_tool_use_ids=seen_tool_use_ids,
-                    previous_input_tokens=previous_input_tokens,
-                )
-                append_snapshot(log_path, snapshot)
-                previous_input_tokens = snapshot.input_tokens
+            # Log after stream completes
+            response_body = {"model": model, "usage": usage_data}
+            snapshot = attribute_call(
+                call_id=call_id,
+                timestamp=timestamp,
+                request_body=request_body,
+                response_body=response_body,
+                content_hashes=content_hashes,
+                seen_tool_use_ids=seen_tool_use_ids,
+                previous_input_tokens=previous_input_tokens,
+            )
+            append_snapshot(log_path, snapshot)
+            previous_input_tokens = snapshot.input_tokens
 
         return StreamingResponse(
             stream_generator(),
@@ -166,18 +166,17 @@ def create_app(log_path: Path = DEFAULT_LOG_PATH) -> Starlette:
 
         target_url = f"{ANTHROPIC_API_BASE}{request.url.path}"
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-            resp = await client.request(
-                method=request.method,
-                url=target_url,
-                content=body_bytes,
-                headers=forward_headers,
-            )
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers=dict(resp.headers),
-            )
+        resp = await http_client.request(
+            method=request.method,
+            url=target_url,
+            content=body_bytes,
+            headers=forward_headers,
+        )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+        )
 
     routes = [
         Route("/v1/messages", proxy_messages, methods=["POST"]),
