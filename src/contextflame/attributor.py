@@ -246,11 +246,11 @@ def attribute_call(
 
     # Build content previews from accumulated text
     content_previews = ContentPreviews(
-        system_preview=_truncate(system_preview_text, 500) if system_preview_text else None,
-        user_text_preview=_truncate("\n".join(user_text_parts), 300) if user_text_parts else None,
-        assistant_text_preview=_truncate("\n".join(assistant_text_parts), 300) if assistant_text_parts else None,
-        tool_calls_preview=_truncate("\n".join(tool_calls_parts), 300) if tool_calls_parts else None,
-        thinking_preview=_truncate("\n".join(thinking_parts), 300) if thinking_parts else None,
+        system_preview=system_preview_text or None,
+        user_text_preview="\n".join(user_text_parts) or None,
+        assistant_text_preview="\n".join(assistant_text_parts) or None,
+        tool_calls_preview="\n".join(tool_calls_parts) or None,
+        thinking_preview="\n".join(thinking_parts) or None,
     )
 
     estimated_total = (
@@ -316,7 +316,7 @@ def attribute_call(
                 byte_size=byte_size,
                 file_path=file_path,
                 is_duplicate=is_duplicate,
-                content_preview=_truncate(result_content, 300),
+                content_preview=result_content,
                 is_carried_over=is_carried_over,
             )
             tool_injections.append(injection)
