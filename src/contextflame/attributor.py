@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from datetime import datetime
 
 import tiktoken
-
-logger = logging.getLogger(__name__)
 
 from contextflame.storage import (
     ContentPreviews,
@@ -262,16 +259,8 @@ def attribute_call(
         + tool_result_tokens + tool_use_tokens + thinking_tokens
     )
 
-    # Sanity check: count tokens on the entire serialized request body
+    # Count tokens on the entire serialized request body for diagnostics
     raw_body_tokens = _count_tokens(json.dumps(request_body))
-    if api_total > 0 and estimated_total / api_total < 0.5:
-        logger.warning(
-            "Call %s: tiktoken estimated %d but API reported %d tokens "
-            "(%.0f%% off). Raw body tokenizes to %d. model=%s",
-            call_id, estimated_total, api_total,
-            (1 - estimated_total / api_total) * 100,
-            raw_body_tokens, model,
-        )
 
     breakdown = TokenBreakdown(
         system_tokens=system_tokens,
@@ -283,6 +272,7 @@ def attribute_call(
         tool_use_tokens=tool_use_tokens,
         thinking_tokens=thinking_tokens,
         estimated_total=estimated_total,
+        raw_body_tokens=raw_body_tokens,
         api_total=api_total,
     )
 
