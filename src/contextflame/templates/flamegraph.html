@@ -134,7 +134,7 @@
 <body>
 
 <div class="header">
-  <h1>ContextFlame</h1>
+  <h1>🔥 ContextFlame</h1>
   <div class="subtitle">Context profiling report &mdash; {{call_count}} API calls &mdash; {{session_date}}</div>
 </div>
 
@@ -293,7 +293,9 @@ function buildTree() {
   const root = mkNode('Session', 'root', 0);
 
   snapshots.forEach((snap, i) => {
-    const callTokens = snap.input_tokens + snap.output_tokens;
+    // Include cache tokens — API reports cached input separately
+    const fullInput = snap.input_tokens + (snap.cache_read_tokens || 0) + (snap.cache_creation_tokens || 0);
+    const callTokens = fullInput + snap.output_tokens;
     const callNode = mkNode(`Call #${i + 1}`, 'call', callTokens,
       { call_id: snap.call_id, context_reset: snap.context_reset, snap });
 
@@ -301,10 +303,10 @@ function buildTree() {
 
     if (tb) {
       // ── New breakdown-based tree ──
-      // The API-reported input_tokens is ground truth. Our tiktoken estimates
-      // may not sum to it exactly. We distribute any residual so children
-      // always visually fill the parent bar (no cross-sections / gaps).
-      const inputBudget = snap.input_tokens;
+      // The full input (including cache) is ground truth. Our tiktoken
+      // estimates may not sum to it exactly. We distribute any residual so
+      // children always visually fill the parent bar (no gaps).
+      const inputBudget = fullInput;
 
       // Gather raw tiktoken component values
       const rawSystem = tb.system_tokens || 0;
@@ -604,18 +606,24 @@ function showFlameTooltip(event, node) {
 
   if (node.type === 'call' && node.meta.snap) {
     const s = node.meta.snap;
-    html += `<span class="tt-label">Input</span> <span class="tt-value">${fmtK(s.input_tokens)}</span><br>`;
-    html += `<span class="tt-label">Output</span> <span class="tt-value">${fmtK(s.output_tokens)}</span><br>`;
-    if (s.cache_read_tokens > 0) {
-      html += `<span class="tt-label">Cache read</span> <span class="tt-value">${fmtK(s.cache_read_tokens)}</span><br>`;
+    const fullIn = s.input_tokens + (s.cache_read_tokens || 0) + (s.cache_creation_tokens || 0);
+    html += `<span class="tt-label">Context</span> <span class="tt-value">${fmtK(fullIn)}</span>`;
+    if (s.cache_read_tokens > 0 || s.cache_creation_tokens > 0) {
+      html += ` <span class="tt-label">(${fmtK(s.input_tokens)} new`;
+      if (s.cache_read_tokens > 0) html += ` + ${fmtK(s.cache_read_tokens)} cached`;
+      if (s.cache_creation_tokens > 0) html += ` + ${fmtK(s.cache_creation_tokens)} cache write`;
+      html += `)</span>`;
     }
+    html += '<br>';
+    html += `<span class="tt-label">Output</span> <span class="tt-value">${fmtK(s.output_tokens)}</span><br>`;
     if (s.token_breakdown) {
       const tb = s.token_breakdown;
       const err = tb.api_total > 0 ? ((tb.estimated_total - tb.api_total) / tb.api_total * 100).toFixed(1) : '0.0';
       const sign = err >= 0 ? '+' : '';
       const cls = Math.abs(parseFloat(err)) > 10 ? 'tt-dup' : 'tt-label';
-      html += `<span class="${cls}">tiktoken ${sign}${err}%</span> `;
-      html += `<span class="tt-label">(${fmtK(tb.estimated_total)} est / ${fmtK(tb.api_total)} api)</span><br>`;
+      html += `<span class="tt-label">tiktoken</span> <span class="${cls}">${fmtK(tb.estimated_total)}</span>`;
+      html += ` <span class="tt-label">vs API</span> <span class="tt-value">${fmtK(tb.api_total)}</span>`;
+      html += ` <span class="${cls}">(${sign}${err}%)</span><br>`;
     }
     if (s.context_reset) {
       html += `<span class="tt-dup">Context reset detected</span><br>`;
