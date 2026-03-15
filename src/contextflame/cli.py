@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -12,6 +13,8 @@ import time
 from pathlib import Path
 
 import click
+
+logging.basicConfig(level=logging.WARNING, format="%(name)s: %(message)s")
 
 
 class ContextFlameCLI(click.Group):
