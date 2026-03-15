@@ -108,7 +108,10 @@ def compute_metrics(
             m.total_thinking_tokens += tb.thinking_tokens
 
             err = tb.estimation_error
-            errors.append(err)
+            # Only include in stats if estimate is reasonably close
+            # (exclude sub-agent calls where API adds invisible overhead)
+            if abs(err) < 0.5:
+                errors.append(err)
 
     # Ratios
     if m.total_input_tokens > 0:
