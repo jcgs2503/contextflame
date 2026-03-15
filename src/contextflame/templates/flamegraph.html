@@ -258,6 +258,7 @@ function nodeColor(node) {
   if (node.type === 'tool_calls') return colors.tool_calls;
   if (node.type === 'thinking') return colors.thinking;
   if (node.type === 'output') return colors.output;
+  if (node.type === 'unattributed') return '#2d333b';
   // Legacy
   if (node.type === 'history') return colors.history;
   if (node.type === 'tools') return '#5a3e1e';
@@ -296,7 +297,12 @@ function buildTree() {
     // Include cache tokens — API reports cached input separately
     const fullInput = snap.input_tokens + (snap.cache_read_tokens || 0) + (snap.cache_creation_tokens || 0);
     const callTokens = fullInput + snap.output_tokens;
-    const callNode = mkNode(`Call #${i + 1}`, 'call', callTokens,
+    // Short model label for display
+    const modelShort = snap.model.includes('opus') ? 'Opus'
+      : snap.model.includes('sonnet') ? 'Sonnet'
+      : snap.model.includes('haiku') ? 'Haiku'
+      : snap.model;
+    const callNode = mkNode(`Call #${i + 1} (${modelShort})`, 'call', callTokens,
       { call_id: snap.call_id, context_reset: snap.context_reset, snap });
 
     const tb = snap.token_breakdown;
@@ -432,6 +438,13 @@ function buildTree() {
         });
         callNode.children.push(toolsNode);
       }
+    }
+
+    // Unattributed: gap between attributed children and full input
+    const childInputTokens = callNode.children.reduce((s, c) => s + c.tokens, 0);
+    const unattributed = fullInput - childInputTokens;
+    if (unattributed > 0) {
+      callNode.children.push(mkNode('Unattributed', 'unattributed', unattributed));
     }
 
     // Output
@@ -744,6 +757,7 @@ if (hasBreakdown) {
     { label: 'Tool Results', color: colors.tool_results },
     { label: 'Tool Calls', color: colors.tool_calls },
     { label: 'Thinking', color: colors.thinking },
+    { label: 'Unattributed', color: '#2d333b' },
     { label: 'Output', color: colors.output },
   ].forEach(item => {
     const el = document.createElement('div');
@@ -768,8 +782,11 @@ if (hasBreakdown) {
 // Build stacked data
 let stackKeys, stackColor;
 if (hasBreakdown) {
-  stackKeys = ['system', 'tool_schemas', 'user_text', 'assistant_text', 'tool_results', 'tool_calls', 'thinking', 'output'];
-  stackColor = function(key) { return colors[key] || '#484f58'; };
+  stackKeys = ['system', 'tool_schemas', 'user_text', 'assistant_text', 'tool_results', 'tool_calls', 'thinking', 'unattributed', 'output'];
+  stackColor = function(key) {
+    if (key === 'unattributed') return '#2d333b';
+    return colors[key] || '#484f58';
+  };
 } else {
   stackKeys = ['system', 'history', ...toolNames.map(n => 'tool_' + n), 'output'];
   stackColor = function(key) {
@@ -786,13 +803,21 @@ const chartData = snapshots.map((s, i) => {
 
   if (hasBreakdown && s.token_breakdown) {
     const tb = s.token_breakdown;
-    d.system = tb.system_tokens || 0;
-    d.tool_schemas = tb.tools_tokens || 0;
-    d.user_text = tb.user_text_tokens || 0;
-    d.assistant_text = tb.assistant_text_tokens || 0;
-    d.tool_results = tb.tool_result_tokens || 0;
-    d.tool_calls = tb.tool_use_tokens || 0;
-    d.thinking = tb.thinking_tokens || 0;
+    const fullInput = s.input_tokens + (s.cache_read_tokens || 0) + (s.cache_creation_tokens || 0);
+    const estSum = (tb.system_tokens || 0) + (tb.tools_tokens || 0) + (tb.user_text_tokens || 0)
+      + (tb.assistant_text_tokens || 0) + (tb.tool_result_tokens || 0)
+      + (tb.tool_use_tokens || 0) + (tb.thinking_tokens || 0);
+    const scale = estSum > 0 ? fullInput / estSum : 1;
+    d.system = Math.round((tb.system_tokens || 0) * scale);
+    d.tool_schemas = Math.round((tb.tools_tokens || 0) * scale);
+    d.user_text = Math.round((tb.user_text_tokens || 0) * scale);
+    d.assistant_text = Math.round((tb.assistant_text_tokens || 0) * scale);
+    d.tool_results = Math.round((tb.tool_result_tokens || 0) * scale);
+    d.tool_calls = Math.round((tb.tool_use_tokens || 0) * scale);
+    d.thinking = Math.round((tb.thinking_tokens || 0) * scale);
+    // Unattributed: gap between scaled estimate and API total (server-side overhead)
+    const scaledSum = d.system + d.tool_schemas + d.user_text + d.assistant_text + d.tool_results + d.tool_calls + d.thinking;
+    d.unattributed = Math.max(0, fullInput - scaledSum);
   } else if (hasBreakdown) {
     // Mixed: snapshot without breakdown in a breakdown session
     d.system = s.system_tokens;
