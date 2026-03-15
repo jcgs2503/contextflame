@@ -58,6 +58,9 @@ class TokenBreakdown:
     # Grand total from tiktoken
     estimated_total: int = 0
 
+    # Tokens from serializing the entire request body (diagnostic)
+    raw_body_tokens: int = 0
+
     # API ground truth
     api_total: int = 0  # input_tokens + cache_read + cache_creation
 
