@@ -38,12 +38,12 @@
   .breadcrumb .current { color: #f0f6fc; cursor: default; }
 
   .flame-row {
-    display: flex; width: 100%; cursor: pointer; position: relative;
+    position: relative; width: 100%; height: 28px; cursor: pointer;
   }
   .flame-cell {
-    height: 28px; display: flex; align-items: center; padding: 0 6px;
-    font-size: 11px; color: #f0f6fc; overflow: hidden; white-space: nowrap;
-    text-overflow: ellipsis; border-right: 1px solid #0d1117;
+    position: absolute; height: 28px; display: flex; align-items: center;
+    padding: 0 6px; font-size: 11px; color: #f0f6fc; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis; border-right: 1px solid #0d1117;
     border-bottom: 1px solid rgba(13,17,23,0.6); transition: filter 0.1s;
     min-width: 0;
   }
@@ -93,18 +93,15 @@
   .bar-bg { background: #161b22; border-radius: 2px; height: 6px; width: 100%; }
   .bar-fill { height: 6px; border-radius: 2px; }
 
-  /* --- Content inspect panel --- */
+  /* --- Content inspect panel (inline bottom) --- */
   .content-panel {
-    position: fixed; top: 0; right: 0; width: 420px; height: 100vh;
-    background: #161b22; border-left: 1px solid #30363d;
-    z-index: 200; display: flex; flex-direction: column;
-    transform: translateX(100%); transition: transform 0.2s ease;
-    box-shadow: -4px 0 24px rgba(0,0,0,0.5);
+    display: none; background: #161b22; border-top: 2px solid #30363d;
+    margin: 0 32px 32px; border-radius: 6px;
   }
-  .content-panel.open { transform: translateX(0); }
+  .content-panel.open { display: block; }
   .content-panel-header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 20px; border-bottom: 1px solid #21262d;
+    padding: 12px 20px; border-bottom: 1px solid #21262d;
   }
   .content-panel-header h3 { font-size: 14px; color: #f0f6fc; margin: 0; }
   .content-panel-header .panel-tokens { font-size: 12px; color: #8b949e; }
@@ -114,14 +111,22 @@
   }
   .content-panel-close:hover { color: #f0f6fc; border-color: #484f58; }
   .content-panel-body {
-    flex: 1; overflow-y: auto; padding: 16px 20px;
+    overflow-y: auto; padding: 16px 20px;
+    max-height: 200px; transition: max-height 0.2s ease;
   }
+  .content-panel-body.expanded { max-height: 600px; }
   .content-panel-body pre {
     font-family: 'SF Mono', SFMono-Regular, Consolas, monospace;
     font-size: 12px; line-height: 1.5; color: #c9d1d9;
     white-space: pre-wrap; word-break: break-word; margin: 0;
   }
   .content-panel-body .no-preview { color: #484f58; font-style: italic; }
+  .content-panel-expand {
+    background: none; border: 1px solid #30363d; border-radius: 4px;
+    color: #8b949e; cursor: pointer; padding: 4px 10px; font-size: 12px;
+    margin-left: 8px;
+  }
+  .content-panel-expand:hover { color: #f0f6fc; border-color: #484f58; }
   .flame-cell.inspectable { cursor: pointer; }
   .flame-cell.inspectable:hover { outline: 1px solid rgba(56,139,253,0.5); outline-offset: -1px; }
 </style>
@@ -172,9 +177,12 @@
       <h3 id="panel-title"></h3>
       <span class="panel-tokens" id="panel-tokens"></span>
     </div>
-    <button class="content-panel-close" id="panel-close">Close &times;</button>
+    <div>
+      <button class="content-panel-expand" id="panel-expand">Expand</button>
+      <button class="content-panel-close" id="panel-close">Close &times;</button>
+    </div>
   </div>
-  <div class="content-panel-body">
+  <div class="content-panel-body" id="panel-body">
     <pre id="panel-content"></pre>
   </div>
 </div>
@@ -433,6 +441,14 @@ function buildTree() {
     root.tokens += callTokens;
   });
 
+  // Set _parent references for breadcrumb navigation
+  function setParents(node) {
+    if (node.children) {
+      node.children.forEach(c => { c._parent = node; setParents(c); });
+    }
+  }
+  setParents(root);
+
   return root;
 }
 
@@ -444,14 +460,34 @@ const breadcrumbDiv = document.getElementById('breadcrumb');
 const tooltip = document.getElementById('tooltip');
 
 let currentZoom = tree;
-let zoomStack = []; // for breadcrumb navigation
 
 function renderFlame(node) {
   flameDiv.innerHTML = '';
   currentZoom = node;
   renderBreadcrumb();
 
-  // Collect rows: each depth level of the tree from current zoom
+  const totalTokens = node.tokens || 1;
+
+  // Pre-compute absolute layout: assign _x0, _x1 (0–1 range) to each node
+  function computeLayout(n, x0, x1) {
+    n._x0 = x0;
+    n._x1 = x1;
+    if (n.children && n.children.length > 0) {
+      const childSum = n.children.reduce((s, c) => s + c.tokens, 0) || 1;
+      let cursor = x0;
+      n.children.forEach((c, i) => {
+        const share = (c.tokens / childSum) * (x1 - x0);
+        const cx0 = cursor;
+        // Last child gets remainder to avoid rounding gaps
+        const cx1 = (i === n.children.length - 1) ? x1 : cursor + share;
+        computeLayout(c, cx0, cx1);
+        cursor = cx1;
+      });
+    }
+  }
+  computeLayout(node, 0, 1);
+
+  // Collect rows by depth
   const rows = [];
   function collectRow(nodes, depth) {
     if (nodes.length === 0) return;
@@ -464,31 +500,29 @@ function renderFlame(node) {
     });
     if (nextLevel.length > 0) collectRow(nextLevel, depth + 1);
   }
-
-  // Start from the zoom node: first row is the node itself, then its children
   collectRow([node], 0);
 
-  const totalTokens = node.tokens || 1;
-
-  // Render rows bottom-up (root at bottom, leaves at top) — like perf flamegraphs
+  // Render rows bottom-up (root at bottom, leaves at top)
   rows.reverse().forEach(rowNodes => {
     const rowEl = document.createElement('div');
     rowEl.className = 'flame-row';
 
     rowNodes.forEach(n => {
-      const pct = (n.tokens / totalTokens) * 100;
+      const leftPct = n._x0 * 100;
+      const widthPct = (n._x1 - n._x0) * 100;
       const cell = document.createElement('div');
-      cell.className = 'flame-cell' + (pct < 2 ? ' too-small' : '') + (n.meta.is_duplicate ? ' dup' : '') + (n.meta.is_carried_over ? ' carried-over' : '');
-      cell.style.width = pct + '%';
+      cell.className = 'flame-cell' + (widthPct < 2 ? ' too-small' : '') + (n.meta.is_duplicate ? ' dup' : '') + (n.meta.is_carried_over ? ' carried-over' : '');
+      cell.style.left = leftPct + '%';
+      cell.style.width = widthPct + '%';
       cell.style.backgroundColor = nodeColor(n);
 
-      if (pct >= 2) {
+      if (widthPct >= 2) {
         const labelSpan = document.createElement('span');
         labelSpan.className = 'cell-label';
         labelSpan.textContent = n.name;
         cell.appendChild(labelSpan);
 
-        if (pct >= 6) {
+        if (widthPct >= 6) {
           const tokSpan = document.createElement('span');
           tokSpan.className = 'cell-tokens';
           tokSpan.textContent = fmtK(n.tokens);
@@ -509,7 +543,6 @@ function renderFlame(node) {
       } else if (hasChildren) {
         cell.addEventListener('click', (e) => {
           e.stopPropagation();
-          zoomStack.push(currentZoom);
           renderFlame(n);
         });
       }
@@ -528,7 +561,14 @@ function renderFlame(node) {
 
 function renderBreadcrumb() {
   breadcrumbDiv.innerHTML = '';
-  const path = [...zoomStack, currentZoom];
+  // Build path by walking _parent chain from currentZoom to root
+  const path = [];
+  let n = currentZoom;
+  while (n) {
+    path.push(n);
+    n = n._parent;
+  }
+  path.reverse();
 
   path.forEach((node, i) => {
     if (i > 0) {
@@ -545,8 +585,6 @@ function renderBreadcrumb() {
       span.className = 'current';
     } else {
       span.addEventListener('click', () => {
-        // Navigate back to this level
-        zoomStack = zoomStack.slice(0, i);
         renderFlame(node);
       });
     }
@@ -638,6 +676,8 @@ const panelTitle = document.getElementById('panel-title');
 const panelTokens = document.getElementById('panel-tokens');
 const panelContent = document.getElementById('panel-content');
 const panelClose = document.getElementById('panel-close');
+const panelBody = document.getElementById('panel-body');
+const panelExpand = document.getElementById('panel-expand');
 
 function showContentPanel(node) {
   panelTitle.textContent = node.name;
@@ -650,7 +690,10 @@ function showContentPanel(node) {
     panelContent.className = 'no-preview';
     panelContent.textContent = '(no preview available)';
   }
+  panelBody.classList.remove('expanded');
+  panelExpand.textContent = 'Expand';
   contentPanel.classList.add('open');
+  contentPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function hideContentPanel() {
@@ -658,6 +701,10 @@ function hideContentPanel() {
 }
 
 panelClose.addEventListener('click', hideContentPanel);
+panelExpand.addEventListener('click', () => {
+  const isExpanded = panelBody.classList.toggle('expanded');
+  panelExpand.textContent = isExpanded ? 'Collapse' : 'Expand';
+});
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') hideContentPanel();
 });
