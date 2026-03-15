@@ -129,6 +129,47 @@
   .content-panel-expand:hover { color: #f0f6fc; border-color: #484f58; }
   .flame-cell.inspectable { cursor: pointer; }
   .flame-cell.inspectable:hover { outline: 1px solid rgba(56,139,253,0.5); outline-offset: -1px; }
+
+  /* --- Help panel --- */
+  .help-btn {
+    background: none; border: 1px solid #30363d; border-radius: 4px;
+    color: #8b949e; cursor: pointer; padding: 4px 12px; font-size: 12px;
+    margin-left: auto; flex-shrink: 0;
+  }
+  .help-btn:hover { color: #f0f6fc; border-color: #484f58; }
+  .help-overlay {
+    display: none; position: fixed; top: 0; right: 0; width: 420px; height: 100vh;
+    background: #161b22; border-left: 1px solid #30363d; z-index: 300;
+    flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.5);
+  }
+  .help-overlay.open { display: flex; }
+  .help-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid #21262d;
+  }
+  .help-header h3 { font-size: 14px; color: #f0f6fc; margin: 0; }
+  .help-close {
+    background: none; border: 1px solid #30363d; border-radius: 4px;
+    color: #8b949e; cursor: pointer; padding: 4px 10px; font-size: 12px;
+  }
+  .help-close:hover { color: #f0f6fc; border-color: #484f58; }
+  .help-body {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+    font-size: 13px; line-height: 1.7; color: #c9d1d9;
+  }
+  .help-body dt {
+    color: #f0f6fc; font-weight: 600; margin-top: 12px;
+  }
+  .help-body dt:first-child { margin-top: 0; }
+  .help-body dd {
+    margin: 2px 0 8px 0; color: #8b949e;
+  }
+  .help-body .help-section {
+    color: #388bfd; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-top: 20px; margin-bottom: 4px;
+    border-bottom: 1px solid #21262d; padding-bottom: 4px;
+  }
+  .help-body .help-section:first-child { margin-top: 0; }
 </style>
 </head>
 <body>
@@ -138,7 +179,89 @@
   <div class="subtitle">Context profiling report &mdash; {{call_count}} API calls &mdash; {{session_date}}</div>
 </div>
 
-<div class="metrics-bar" id="metrics-bar"></div>
+<div class="metrics-bar" id="metrics-bar">
+  <button class="help-btn" id="help-btn">? Docs</button>
+</div>
+
+<div class="help-overlay" id="help-overlay">
+  <div class="help-header">
+    <h3>Metric Documentation</h3>
+    <button class="help-close" id="help-close">Close &times;</button>
+  </div>
+  <div class="help-body">
+    <div class="help-section">Header Metrics</div>
+    <dl>
+      <dt>API Calls</dt>
+      <dd>Total number of API requests in this session, including sub-agent calls (e.g. Haiku for WebSearch).</dd>
+
+      <dt>Total Input</dt>
+      <dd>Sum of <code>input_tokens</code> across all calls. Note: with prompt caching, this only counts non-cached tokens. The full context size includes cached tokens.</dd>
+
+      <dt>Total Output</dt>
+      <dd>Sum of <code>output_tokens</code> (model responses) across all calls.</dd>
+
+      <dt>Tool Tokens</dt>
+      <dd>Tokens from tool results (Read, Grep, Bash output, etc.) injected into the conversation. Estimated via tiktoken.</dd>
+
+      <dt>Tool Ratio</dt>
+      <dd><code>tool_tokens / total_input</code> &mdash; fraction of input consumed by tool results. &gt;30% yellow, &gt;50% red.</dd>
+
+      <dt>Duplicate Ratio</dt>
+      <dd><code>duplicate_tool_tokens / total_tool_tokens</code> &mdash; tool results that appeared in a previous call (wasted context). &gt;10% yellow, &gt;20% red.</dd>
+
+      <dt>Peak Util</dt>
+      <dd>Highest single-call input as percentage of the model's context limit (200k). &gt;70% yellow, &gt;90% red.</dd>
+
+      <dt>Resets</dt>
+      <dd>Number of context window resets (conversation exceeded limit and was truncated).</dd>
+
+      <dt>Wasted</dt>
+      <dd>Total duplicate tool tokens &mdash; content the model re-read unnecessarily.</dd>
+
+      <dt>Carry Cost</dt>
+      <dd>Tool results carried over from previous calls (still in conversation history). High values mean old tool outputs are eating context.</dd>
+
+      <dt>Tool Schemas</dt>
+      <dd>Tokens for tool definitions (the <code>tools[]</code> array sent every request). These are fixed overhead per call.</dd>
+
+      <dt>tiktoken Error</dt>
+      <dd>Average estimation error of tiktoken vs API-reported tokens. Only includes calls where the estimate is within 50% (excludes sub-agent calls with server-side overhead).</dd>
+    </dl>
+
+    <div class="help-section">Flamegraph</div>
+    <dl>
+      <dt>Width = Tokens</dt>
+      <dd>Each block's width is proportional to its token count. Wider blocks use more context.</dd>
+
+      <dt>Click to Zoom</dt>
+      <dd>Click any block with children to zoom in. Use the breadcrumb to navigate back.</dd>
+
+      <dt>Inspect Content</dt>
+      <dd>Click leaf nodes (highlighted on hover) to view the actual text in the bottom panel.</dd>
+
+      <dt>Unattributed</dt>
+      <dd>Gap between tiktoken estimate and API-reported total. Usually ~12% for main calls (API overhead). Much larger for sub-agent calls where Anthropic injects internal system prompts server-side.</dd>
+
+      <dt>Carried (dimmed)</dt>
+      <dd>Tool results carried over from a previous call, shown at reduced opacity.</dd>
+
+      <dt>Striped blocks</dt>
+      <dd>Duplicate tool results &mdash; content already seen in an earlier call.</dd>
+    </dl>
+
+    <div class="help-section">Timeline</div>
+    <dl>
+      <dt>Stacked Bars</dt>
+      <dd>Each bar is one API call, stacked by component (system, tools, user text, etc.). Heights are normalized to API total including cached tokens.</dd>
+
+      <dt>Red dashed line</dt>
+      <dd>Model context limit (200k tokens).</dd>
+
+      <dt>Red triangles</dt>
+      <dd>Context resets &mdash; conversation was truncated at that call.</dd>
+    </dl>
+  </div>
+</div>
 
 <div class="section">
   <div class="section-title">Flamegraph &mdash; click to zoom, click leaves to inspect content, width = tokens</div>
@@ -727,7 +850,16 @@ panelExpand.addEventListener('click', () => {
   panelExpand.textContent = isExpanded ? 'Collapse' : 'Expand';
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') hideContentPanel();
+  if (e.key === 'Escape') { hideContentPanel(); helpOverlay.classList.remove('open'); }
+});
+
+// ─── Help panel ─────────────────────────────────────────────────────────────
+const helpOverlay = document.getElementById('help-overlay');
+document.getElementById('help-btn').addEventListener('click', () => {
+  helpOverlay.classList.toggle('open');
+});
+document.getElementById('help-close').addEventListener('click', () => {
+  helpOverlay.classList.remove('open');
 });
 
 // Initial render
