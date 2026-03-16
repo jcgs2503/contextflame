@@ -179,9 +179,7 @@
   <div class="subtitle">Context profiling report &mdash; {{call_count}} API calls &mdash; {{session_date}}</div>
 </div>
 
-<div class="metrics-bar" id="metrics-bar">
-  <button class="help-btn" id="help-btn">? Docs</button>
-</div>
+<div class="metrics-bar" id="metrics-bar"></div>
 
 <div class="help-overlay" id="help-overlay">
   <div class="help-header">
@@ -348,6 +346,13 @@ if (metrics.total_estimated_tokens > 0) {
   addMetric('tiktoken Error', errStr, Math.abs(metrics.mean_estimation_error) > 0.1 ? 'warn' : '');
 }
 
+// Add docs button at the end of metrics bar
+const helpBtn = document.createElement('button');
+helpBtn.className = 'help-btn';
+helpBtn.id = 'help-btn';
+helpBtn.textContent = '? Docs';
+metricsBar.appendChild(helpBtn);
+
 // ─── Color scheme ───────────────────────────────────────────────────────────
 const colors = {
   system: '#484f58',
@@ -381,7 +386,7 @@ function nodeColor(node) {
   if (node.type === 'tool_calls') return colors.tool_calls;
   if (node.type === 'thinking') return colors.thinking;
   if (node.type === 'output') return colors.output;
-  if (node.type === 'unattributed') return '#2d333b';
+  if (node.type === 'unattributed') return '#1c2028';
   // Legacy
   if (node.type === 'history') return colors.history;
   if (node.type === 'tools') return '#5a3e1e';
@@ -432,11 +437,6 @@ function buildTree() {
 
     if (tb) {
       // ── New breakdown-based tree ──
-      // The full input (including cache) is ground truth. Our tiktoken
-      // estimates may not sum to it exactly. We distribute any residual so
-      // children always visually fill the parent bar (no gaps).
-      const inputBudget = fullInput;
-
       // Gather raw tiktoken component values
       const rawSystem = tb.system_tokens || 0;
       const rawToolSchemas = tb.tools_tokens || 0;
@@ -448,8 +448,13 @@ function buildTree() {
       const rawSum = rawSystem + rawToolSchemas + rawUserText + rawAssistant
                    + rawToolResult + rawToolUse + rawThinking;
 
-      // Scale factor to normalize tiktoken estimates to API total
-      const scale = rawSum > 0 ? inputBudget / rawSum : 1;
+      // Use raw_body_tokens (full request serialized) as the attribution
+      // budget if available, otherwise use API total. This prevents
+      // inflating tiny estimates to fill server-side overhead.
+      const rawBody = (tb.raw_body_tokens && tb.raw_body_tokens > rawSum)
+        ? tb.raw_body_tokens : rawSum;
+      const attributable = Math.min(rawBody, fullInput);
+      const scale = rawSum > 0 ? attributable / rawSum : 1;
 
       const sysTokens = Math.round(rawSystem * scale);
       const schemaTokens = Math.round(rawToolSchemas * scale);
@@ -889,7 +894,7 @@ if (hasBreakdown) {
     { label: 'Tool Results', color: colors.tool_results },
     { label: 'Tool Calls', color: colors.tool_calls },
     { label: 'Thinking', color: colors.thinking },
-    { label: 'Unattributed', color: '#2d333b' },
+    { label: 'Unattributed', color: '#1c2028' },
     { label: 'Output', color: colors.output },
   ].forEach(item => {
     const el = document.createElement('div');
@@ -916,7 +921,7 @@ let stackKeys, stackColor;
 if (hasBreakdown) {
   stackKeys = ['system', 'tool_schemas', 'user_text', 'assistant_text', 'tool_results', 'tool_calls', 'thinking', 'unattributed', 'output'];
   stackColor = function(key) {
-    if (key === 'unattributed') return '#2d333b';
+    if (key === 'unattributed') return '#1c2028';
     return colors[key] || '#484f58';
   };
 } else {
